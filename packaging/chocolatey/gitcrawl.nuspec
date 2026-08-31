@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>gitcrawl</id>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <title>gitcrawl</title>
     <authors>Ricardo Veronese Ricci</authors>
     <projectUrl>https://github.com/riccivr/gitcrawl</projectUrl>

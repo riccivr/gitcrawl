@@ -1,7 +1,7 @@
 class Gitcrawl < Formula
   desc "Git-native content-addressable web archival engine and crawler"
   homepage "https://github.com/riccivr/gitcrawl"
-  url "https://github.com/riccivr/gitcrawl/archive/refs/tags/v1.0.0.tar.gz"
+  url "https://github.com/riccivr/gitcrawl/archive/refs/tags/v1.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
 
@@ -15,6 +15,6 @@ class Gitcrawl < Formula
   end
 
   test do
-    system "#{bin}/gitcrawl", "version"
+    system "#{bin}/gitcrawl", "-v"
   end
 end

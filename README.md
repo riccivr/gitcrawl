@@ -6,7 +6,7 @@ Git-native web archival engine and crawler in clean C99.
 
 Based on the architecture described in [*Preserving the Web with Git*](https://riccivr.github.io/blog/post.html?post=preserving-the-web-with-git).
 
-[![gitcrawl Demo](assets/demo.gif)](https://asciinema.org/a/PU6De0zPG7PGg1Rv)
+[![gitcrawl Demo](assets/demo.gif)](https://asciinema.org/a/ZxDdqnFFIVMekWNU)
 
 Features
 --------

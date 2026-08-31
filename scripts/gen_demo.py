@@ -100,34 +100,39 @@ def run_and_record(cmd_display, shell_cmd, prompt="riccivr@workstation:~$ ", pau
 add_event(0.0, "\x1b[2J\x1b[H")
 
 # 1. Version check
-run_and_record("gitcrawl version", "./gitcrawl version", pause_after=1.2)
+run_and_record("gitcrawl -v", "./gitcrawl -v", pause_after=1.2)
 
-# 2. Archive snapshot 1
+# 2. Archive snapshot 1 via stdin pipe
 run_and_record("cat /tmp/doc_v1.html | gitcrawl archive -d " + DEMO_REPO + " -i https://docs.kernel.org/process/submitting-patches.html",
                "cat /tmp/doc_v1.html | ./gitcrawl archive -d " + DEMO_REPO + " -i https://docs.kernel.org/process/submitting-patches.html",
                pause_after=1.8)
 
 # 3. Show archived markdown
-run_and_record("gitcrawl show -d " + DEMO_REPO + " https://docs.kernel.org/process/submitting-patches.html -f md",
-               "./gitcrawl show -d " + DEMO_REPO + " https://docs.kernel.org/process/submitting-patches.html -f md",
+run_and_record("gitcrawl show -d " + DEMO_REPO + " -f md https://docs.kernel.org/process/submitting-patches.html",
+               "./gitcrawl show -d " + DEMO_REPO + " -f md https://docs.kernel.org/process/submitting-patches.html",
                pause_after=2.2)
 
-# 4. Archive snapshot 2 (content update)
-run_and_record("cat /tmp/doc_v2.html | gitcrawl archive -d " + DEMO_REPO + " -i https://docs.kernel.org/process/submitting-patches.html -m 'docs: update guidelines with checkpatch and git send-email'",
-               "cat /tmp/doc_v2.html | ./gitcrawl archive -d " + DEMO_REPO + " -i https://docs.kernel.org/process/submitting-patches.html -m 'docs: update guidelines with checkpatch and git send-email'",
+# 4. Show metadata JSON
+run_and_record("gitcrawl show -d " + DEMO_REPO + " -f json https://docs.kernel.org/process/submitting-patches.html",
+               "./gitcrawl show -d " + DEMO_REPO + " -f json https://docs.kernel.org/process/submitting-patches.html",
+               pause_after=2.0)
+
+# 5. Archive snapshot 2 (content update)
+run_and_record("cat /tmp/doc_v2.html | gitcrawl archive -d " + DEMO_REPO + " -m 'docs: update guidelines with checkpatch and git send-email' -i https://docs.kernel.org/process/submitting-patches.html",
+               "cat /tmp/doc_v2.html | ./gitcrawl archive -d " + DEMO_REPO + " -m 'docs: update guidelines with checkpatch and git send-email' -i https://docs.kernel.org/process/submitting-patches.html",
                pause_after=1.8)
 
-# 5. Diff between historical snapshots
+# 6. Diff between historical snapshots
 run_and_record("gitcrawl diff -d " + DEMO_REPO + " https://docs.kernel.org/process/submitting-patches.html",
                "./gitcrawl diff -d " + DEMO_REPO + " https://docs.kernel.org/process/submitting-patches.html",
                pause_after=2.4)
 
-# 6. Fuzzy search archived historical pages
+# 7. Fuzzy search archived historical pages
 run_and_record("gitcrawl search -d " + DEMO_REPO + " -z 'submitting patch'",
                "./gitcrawl search -d " + DEMO_REPO + " -z 'submitting patch'",
                pause_after=2.0)
 
-# 7. Commit history log
+# 8. Commit history log
 run_and_record("gitcrawl log -d " + DEMO_REPO + " https://docs.kernel.org/process/submitting-patches.html",
                "./gitcrawl log -d " + DEMO_REPO + " https://docs.kernel.org/process/submitting-patches.html",
                pause_after=2.2)
