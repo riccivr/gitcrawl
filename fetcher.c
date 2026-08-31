@@ -236,7 +236,6 @@ build_metadata_json(struct crawl_page_data *page)
 
 	struct strbuf sb;
 	strbuf_init(&sb, 1024);
-
 	strbuf_append_str(&sb, "{\n");
 	strbuf_printf(&sb, "  \"url\": \"%s\",\n", page->url_info.normalized_url);
 	strbuf_printf(&sb, "  \"status_code\": %d,\n", page->status_code);
@@ -263,7 +262,7 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 
 	char cmd[9000];
 	snprintf(cmd, sizeof(cmd),
-	         "curl -s -i -L -A \"gitcrawl/1.0 (+https://github.com/riccivr/gitcrawl)\" \"%s\"",
+	         "curl -sSL --compressed -A \"gitcrawl/1.0 (+https://github.com/riccivr/gitcrawl)\" -i \"%s\"",
 	         page->url_info.normalized_url);
 
 	FILE *fp = popen(cmd, "r");
@@ -277,28 +276,35 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 	while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
 		strbuf_append_len(&raw_resp, buf, n);
 	}
-	pclose(fp);
+	int status = pclose(fp);
 
-	if (raw_resp.len == 0) {
+	if (raw_resp.len == 0 || (status != 0 && raw_resp.len < 10)) {
 		strbuf_free(&raw_resp);
 		return -1;
 	}
 
-	const char *body_start = strstr(raw_resp.buf, "\r\n\r\n");
+	/* Locate final HTTP header section in case of redirects */
+	const char *last_http = raw_resp.buf;
+	const char *scan = raw_resp.buf;
+	while ((scan = strstr(scan, "HTTP/")) != NULL) {
+		last_http = scan;
+		scan += 5;
+	}
+
+	const char *body_start = strstr(last_http, "\r\n\r\n");
 	if (body_start) {
 		body_start += 4;
 	} else {
-		body_start = strstr(raw_resp.buf, "\n\n");
+		body_start = strstr(last_http, "\n\n");
 		if (body_start) body_start += 2;
+		else body_start = raw_resp.buf;
 	}
 
-	if (!body_start) {
-		body_start = raw_resp.buf;
-	} else {
-		size_t hlen = body_start - raw_resp.buf;
+	if (body_start > last_http) {
+		size_t hlen = body_start - last_http;
 		char *hdup = malloc(hlen + 1);
 		if (hdup) {
-			memcpy(hdup, raw_resp.buf, hlen);
+			memcpy(hdup, last_http, hlen);
 			hdup[hlen] = '\0';
 
 			char *line = strtok(hdup, "\r\n");
