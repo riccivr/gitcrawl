@@ -29,7 +29,12 @@ jobs:
             artifact_name: gitcrawl-darwin-universal.tar.gz
             cmd: |
               make clean
-              make VERSION="${GITHUB_REF_NAME#v}" CFLAGS="-std=c99 -Wall -Wextra -pedantic -O2 -arch x86_64 -arch arm64 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_GNU_SOURCE -DVERSION=\"${GITHUB_REF_NAME#v}\"" LDFLAGS="-arch x86_64 -arch arm64 -lz"
+              make CFLAGS="-std=c99 -Wall -Wextra -pedantic -O2 -target x86_64-apple-macos10.13 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_GNU_SOURCE" LDFLAGS="-target x86_64-apple-macos10.13 -lz"
+              mv gitcrawl gitcrawl-x86_64
+              make clean
+              make CFLAGS="-std=c99 -Wall -Wextra -pedantic -O2 -target arm64-apple-macos11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_GNU_SOURCE" LDFLAGS="-target arm64-apple-macos11 -lz"
+              mv gitcrawl gitcrawl-arm64
+              lipo -create -output gitcrawl gitcrawl-x86_64 gitcrawl-arm64
               tar -czvf gitcrawl-darwin-universal.tar.gz gitcrawl gitcrawl.1 LICENSE README.md
 
           - target: windows-amd64
@@ -37,7 +42,7 @@ jobs:
             artifact_name: gitcrawl-windows-amd64.zip
             cmd: |
               make clean
-              make CC=gcc VERSION="${GITHUB_REF_NAME#v}" CFLAGS="-std=c99 -Wall -Wextra -O2 -DNO_ZLIB -DVERSION=\"${GITHUB_REF_NAME#v}\"" LDFLAGS=""
+              make CC=gcc CFLAGS="-std=c99 -Wall -Wextra -O2 -DNO_ZLIB" LDFLAGS=""
               cp gitcrawl gitcrawl.exe 2>/dev/null || true
               zip -r gitcrawl-windows-amd64.zip gitcrawl.exe LICENSE README.md
 
