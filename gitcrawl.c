@@ -403,23 +403,18 @@ main(int argc, char **argv)
 	const char *branch = "archive";
 	const char *commit_msg = NULL;
 
-	ARGBEGIN {
-	case 'v':
-	case 'V':
+	if (argc < 2)
+		usage(1);
+
+	if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "-V") == 0 || strcmp(argv[1], "version") == 0) {
 		puts("gitcrawl-" VERSION);
 		return 0;
-	case 'h':
+	}
+	if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "help") == 0) {
 		usage(0);
-		break;
-	default:
-		usage(1);
-		break;
-	} ARGEND;
+	}
 
-	if (argc < 1)
-		usage(1);
-
-	const char *cmd = argv[0];
+	const char *cmd = argv[1];
 	argv++;
 	argc--;
 
@@ -439,11 +434,6 @@ main(int argc, char **argv)
 		return cmd_list(argc, argv, repo_dir, branch);
 	} else if (strcmp(cmd, "gc") == 0) {
 		return git_run_gc(repo_dir);
-	} else if (strcmp(cmd, "-v") == 0 || strcmp(cmd, "-V") == 0 || strcmp(cmd, "version") == 0) {
-		puts("gitcrawl-" VERSION);
-		return 0;
-	} else if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "help") == 0) {
-		usage(0);
 	} else {
 		fprintf(stderr, "Unknown command: %s\n", cmd);
 		usage(1);
