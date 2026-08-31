@@ -1,0 +1,12 @@
+gitcrawl
+*.o
+*.a
+*.tar.gz
+*.zip
+*.deb
+build/
+dist/
+/tmp/
+test_*
+!tests/test_*.[ch]
+!tests/run_tests.sh

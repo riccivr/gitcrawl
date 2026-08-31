@@ -1,0 +1,76 @@
+.TH GITCRAWL 1 gitcrawl-1.0.0
+.SH NAME
+gitcrawl \- Git-native content-addressable web archival engine and crawler
+.SH SYNOPSIS
+.B gitcrawl
+.I command
+[\fIoptions\fR]
+[\fIarguments\fR]
+.SH DESCRIPTION
+.B gitcrawl
+is a fast, zero-dependency C99 CLI tool that crawls web pages and commits their history
+straight into Git repositories as a content-addressable object store.
+.PP
+It sanitizes dynamic web noise (CSRF tokens, dynamic banners, ads), generates clean,
+diff-friendly Markdown for rapid terminal inspection via \fBgit diff\fR, and bypasses
+the working tree by writing blobs, trees, and atomic commits directly to \fB.git/objects\fR.
+.SH COMMANDS
+.TP
+.B archive \fIurl\fR
+Fetches and archives a single URL into the target Git repository branch.
+If \fIurl\fR is omitted and stdin is a pipe, archives stream input.
+.TP
+.B crawl \fIurl\fR
+Recursively crawls a website up to a specified depth and page limit, archiving all pages directly into Git.
+.TP
+.B diff \fIurl\fR [\fIcommit1\fR] [\fIcommit2\fR]
+Shows the clean markdown diff of a URL between two revisions or against the previous commit.
+.TP
+.B search \fIquery\fR
+Searches archived URLs, paths, and historical snapshots with fuzzy score ranking.
+.TP
+.B log \fIurl\fR
+Displays the Git commit history and changelog for a specific URL.
+.TP
+.B show \fIurl\fR
+Prints the archived Markdown, original compressed HTML, or metadata JSON for a URL.
+.TP
+.B list
+Lists all archived endpoints in the repository branch.
+.TP
+.B gc
+Optimizes Git packfiles with delta compression and prunes loose objects.
+.SH OPTIONS
+.TP
+.BI \-b " branch"
+Target branch name (default: \fIarchive\fR).
+.TP
+.BI \-d " directory"
+Target Git repository directory (default: \fI.\fR).
+.TP
+.BI \-m " message"
+Custom commit message.
+.TP
+.BI \-l " depth"
+Maximum crawl recursion depth (default: \fI1\fR).
+.TP
+.BI \-p " max_pages"
+Maximum number of pages to crawl (default: \fI50\fR).
+.TP
+.B \-s
+Restrict crawler to the same domain.
+.TP
+.BI \-f " format"
+Output format for \fBshow\fR (\fImd\fR, \fIhtml\fR, or \fIjson\fR).
+.TP
+.B \-i
+Read content from stdin for the specified URL.
+.TP
+.B \-z
+Enable fuzzy search matching.
+.SH AUTHORS
+Ricardo Veronese Ricci <riccivr>
+.SH SEE ALSO
+.BR git (1),
+.BR approx (1),
+.BR unipaste (1)

@@ -1,0 +1,40 @@
+/* See LICENSE file for copyright and license details. */
+#ifndef FETCHER_H
+#define FETCHER_H
+
+#include <stddef.h>
+#include "sharder.h"
+
+struct crawl_link_queue {
+	char urls[512][8192];
+	int count;
+};
+
+struct crawl_page_data {
+	struct parsed_url url_info;
+	struct shard_paths paths;
+	char *raw_html;
+	size_t raw_len;
+	char *sanitized_html;
+	size_t sanitized_len;
+	char *markdown;
+	size_t md_len;
+	char *metadata_json;
+	size_t json_len;
+	unsigned char *html_gz;
+	size_t gz_len;
+	int status_code;
+	char content_type[128];
+	char etag[128];
+	char last_modified[128];
+	char server[128];
+	struct crawl_link_queue links;
+};
+
+void crawl_page_data_init(struct crawl_page_data *page);
+void crawl_page_data_free(struct crawl_page_data *page);
+
+int fetch_url_data(const char *url_str, struct crawl_page_data *page);
+int ingest_stream_data(const char *url_str, FILE *fp, struct crawl_page_data *page);
+
+#endif
