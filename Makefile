@@ -17,7 +17,7 @@ gitcrawl: $(OBJ)
 test: $(TEST_BIN) gitcrawl
 	@echo "Running unit test suite..."
 	@for t in $(TEST_BIN); do ./$$t || exit 1; done
-	@tests/run_tests.sh
+	@sh tests/run_tests.sh
 	@echo "All tests passed successfully!"
 
 tests/test_sharder: tests/test_sharder.c sharder.o strbuf.o

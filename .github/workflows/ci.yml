@@ -2,32 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, main ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, main ]
 
 jobs:
-  test-linux:
-    name: Test (Linux gcc/clang)
-    runs-on: ubuntu-latest
+  test-unix:
+    name: Test on ${{ matrix.os }} (${{ matrix.compiler }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
-        cc: [ gcc, clang ]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build and Test
-        run: |
-          make clean
-          make CC=${{ matrix.cc }}
-          make test CC=${{ matrix.cc }}
+        os: [ubuntu-latest, macos-latest]
+        compiler: [gcc, clang]
 
-  test-macos:
-    name: Test (macOS clang)
-    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Build and Test
         run: |
-          make clean
-          make
-          make test
+          make CC=${{ matrix.compiler }} clean
+          make CC=${{ matrix.compiler }}
+          make CC=${{ matrix.compiler }} test
+
