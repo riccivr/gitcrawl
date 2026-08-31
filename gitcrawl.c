@@ -82,8 +82,8 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 
 	char default_msg[9000];
 	if (!commit_msg) {
-		snprintf(default_msg, sizeof(default_msg), "archive: %s (%zu bytes md)",
-		         page->url_info.normalized_url, page->md_len);
+		snprintf(default_msg, sizeof(default_msg), "archive: %s (%lu bytes md)",
+		         page->url_info.normalized_url, (unsigned long)page->md_len);
 		commit_msg = default_msg;
 	}
 
@@ -186,7 +186,8 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 	int q_head = 0;
 	int q_tail = 0;
 
-	snprintf(queue[q_tail], sizeof(queue[0]), "%s", base_parsed.normalized_url);
+	strncpy(queue[q_tail], base_parsed.normalized_url, sizeof(queue[0]) - 1);
+	queue[q_tail][sizeof(queue[0]) - 1] = '\0';
 	q_depth[q_tail] = 0;
 	q_tail++;
 
@@ -209,7 +210,7 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 		}
 		if (already_visited) continue;
 
-		snprintf(visited[visited_count++], sizeof(visited[0]), "%s", current_url);
+		strncpy(visited[visited_count++], current_url, sizeof(visited[0]) - 1);
 
 		struct crawl_page_data page;
 		printf("[%d/%d] Crawling (d=%d): %s\n", visited_count, max_pages, cur_d, current_url);
@@ -236,7 +237,8 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 							}
 						}
 						if (!queued_or_visited) {
-							snprintf(queue[q_tail], sizeof(queue[0]), "%s", link_parsed.normalized_url);
+							strncpy(queue[q_tail], link_parsed.normalized_url, sizeof(queue[0]) - 1);
+							queue[q_tail][sizeof(queue[0]) - 1] = '\0';
 							q_depth[q_tail] = cur_d + 1;
 							q_tail++;
 						}

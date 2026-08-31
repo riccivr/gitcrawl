@@ -33,7 +33,7 @@ tests/test_git_plumbing: tests/test_git_plumbing.c git_plumbing.o strbuf.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 clean:
-	rm -f gitcrawl $(OBJ) $(TEST_BIN)
+	rm -f gitcrawl gitcrawl.exe $(OBJ) $(TEST_BIN)
 	rm -rf /tmp/gitcrawl_test_*
 
 install: all
@@ -50,7 +50,7 @@ uninstall:
 
 dist: clean
 	mkdir -p gitcrawl-$(VERSION)
-	cp -R Makefile config.mk arg.h gitcrawl.h *.c *.h gitcrawl.1 README.md LICENSE tests gitcrawl-$(VERSION)
+	cp -R Makefile config.mk arg.h gitcrawl.h *.c *.h gitcrawl.1 README.md LICENSE tests scripts assets packaging gitcrawl-$(VERSION)
 	tar -czvf gitcrawl-$(VERSION).tar.gz gitcrawl-$(VERSION)
 	rm -rf gitcrawl-$(VERSION)
 

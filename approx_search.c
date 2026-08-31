@@ -2,10 +2,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <ctype.h>
 #include "approx_search.h"
 #include "git_plumbing.h"
+
+static const char *
+gitcrawl_strcasestr(const char *haystack, const char *needle)
+{
+	if (!haystack || !needle) return NULL;
+	if (!*needle) return haystack;
+	for (; *haystack; haystack++) {
+		if (tolower((unsigned char)*haystack) == tolower((unsigned char)*needle)) {
+			const char *h = haystack + 1;
+			const char *n = needle + 1;
+			while (*n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) {
+				h++;
+				n++;
+			}
+			if (!*n) return haystack;
+		}
+	}
+	return NULL;
+}
 
 int
 approx_match_score(const char *pattern, const char *str)
@@ -88,7 +106,7 @@ gitcrawl_search_repo(const char *repo_dir, const char *branch, const char *query
 				match_count++;
 			}
 		} else {
-			if (strcasestr(path, query)) {
+			if (gitcrawl_strcasestr(path, query)) {
 				snprintf(results[match_count].path, sizeof(results[match_count].path), "%s", path);
 				results[match_count].score = 100;
 				match_count++;
@@ -100,7 +118,7 @@ gitcrawl_search_repo(const char *repo_dir, const char *branch, const char *query
 		qsort(results, match_count, sizeof(struct search_result), search_cmp);
 	}
 
-	printf("Found %zu matches in %s:\n", match_count, branch ? branch : "archive");
+	printf("Found %lu matches in %s:\n", (unsigned long)match_count, branch ? branch : "archive");
 	for (size_t i = 0; i < match_count && i < 50; i++) {
 		if (fuzzy) {
 			printf("  [%3d] %s\n", results[i].score, results[i].path);

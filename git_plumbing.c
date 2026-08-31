@@ -4,7 +4,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include "git_plumbing.h"
 #include "strbuf.h"
 
@@ -45,47 +44,49 @@ git_repo_init(const char *repo_dir)
 int
 git_write_blob(const char *repo_dir, const void *data, size_t len, char *out_sha)
 {
-	int in_pipe[2];
-	int out_pipe[2];
-	if (pipe(in_pipe) < 0 || pipe(out_pipe) < 0)
+	static int seq = 0;
+	char tmp_path[512];
+#if defined(_WIN32)
+	const char *tmp_dir = getenv("TEMP");
+	if (!tmp_dir) tmp_dir = getenv("TMP");
+	if (!tmp_dir) tmp_dir = ".";
+	snprintf(tmp_path, sizeof(tmp_path), "%s/gitcrawl_blob_%d_%d.tmp", tmp_dir, (int)getpid(), seq++);
+#else
+	snprintf(tmp_path, sizeof(tmp_path), "/tmp/gitcrawl_blob_%d_%d.tmp", (int)getpid(), seq++);
+#endif
+
+	FILE *f = fopen(tmp_path, "wb");
+	if (!f) return -1;
+	if (len > 0 && fwrite(data, 1, len, f) != len) {
+		fclose(f);
+		unlink(tmp_path);
 		return -1;
-
-	pid_t pid = fork();
-	if (pid == 0) {
-		close(in_pipe[1]);
-		close(out_pipe[0]);
-		dup2(in_pipe[0], STDIN_FILENO);
-		dup2(out_pipe[1], STDOUT_FILENO);
-		close(in_pipe[0]);
-		close(out_pipe[1]);
-
-		execlp("git", "git", "-C", repo_dir ? repo_dir : ".", "hash-object", "-w", "--stdin", NULL);
-		exit(127);
 	}
+	fclose(f);
 
-	close(in_pipe[0]);
-	close(out_pipe[1]);
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd), "git -C \"%s\" hash-object -w \"%s\" 2>/dev/null",
+	         (repo_dir && *repo_dir) ? repo_dir : ".", tmp_path);
 
-	size_t written = 0;
-	while (written < len) {
-		ssize_t w = write(in_pipe[1], (const char *)data + written, len - written);
-		if (w <= 0) break;
-		written += w;
+	FILE *fp = popen(cmd, "r");
+	if (!fp) {
+		unlink(tmp_path);
+		return -1;
 	}
-	close(in_pipe[1]);
 
 	char buf[128] = {0};
-	ssize_t r = read(out_pipe[0], buf, sizeof(buf) - 1);
-	close(out_pipe[0]);
+	char *res = fgets(buf, sizeof(buf), fp);
+	int status = pclose(fp);
+	unlink(tmp_path);
 
-	int status;
-	waitpid(pid, &status, 0);
-
-	if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && r > 0) {
-		while (r > 0 && (buf[r-1] == '\n' || buf[r-1] == '\r'))
-			buf[--r] = '\0';
-		snprintf(out_sha, 64, "%s", buf);
-		return 0;
+	if (status == 0 && res) {
+		size_t rlen = strlen(buf);
+		while (rlen > 0 && (buf[rlen-1] == '\n' || buf[rlen-1] == '\r'))
+			buf[--rlen] = '\0';
+		if (rlen == 40) {
+			snprintf(out_sha, 64, "%s", buf);
+			return 0;
+		}
 	}
 	return -1;
 }
@@ -97,7 +98,14 @@ git_index_builder_init(struct git_index_builder *b, const char *repo_dir, const 
 	snprintf(b->repo_dir, sizeof(b->repo_dir), "%s", dir);
 
 	static int seq = 0;
+#if defined(_WIN32)
+	const char *tmp_dir = getenv("TEMP");
+	if (!tmp_dir) tmp_dir = getenv("TMP");
+	if (!tmp_dir) tmp_dir = ".";
+	snprintf(b->index_file, sizeof(b->index_file), "%s/gitcrawl_idx_%d_%d", tmp_dir, (int)getpid(), seq++);
+#else
 	snprintf(b->index_file, sizeof(b->index_file), "/tmp/gitcrawl_idx_%d_%d", (int)getpid(), seq++);
+#endif
 	unlink(b->index_file);
 
 	if (base_ref && *base_ref) {
@@ -141,8 +149,10 @@ git_index_builder_write_tree(struct git_index_builder *b, char *out_tree_sha)
 		size_t len = strlen(buf);
 		while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
 			buf[--len] = '\0';
-		snprintf(out_tree_sha, 64, "%s", buf);
-		return 0;
+		if (strlen(buf) == 40) {
+			snprintf(out_tree_sha, 64, "%s", buf);
+			return 0;
+		}
 	}
 	return -1;
 }
@@ -222,8 +232,10 @@ git_get_ref_commit(const char *repo_dir, const char *ref_name, char *out_commit_
 		size_t len = strlen(buf);
 		while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
 			buf[--len] = '\0';
-		snprintf(out_commit_sha, 64, "%s", buf);
-		return 0;
+		if (strlen(buf) == 40) {
+			snprintf(out_commit_sha, 64, "%s", buf);
+			return 0;
+		}
 	}
 	return -1;
 }
@@ -253,8 +265,10 @@ git_create_commit(const char *repo_dir, const char *tree_sha, const char *parent
 		size_t len = strlen(buf);
 		while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
 			buf[--len] = '\0';
-		snprintf(out_commit_sha, 64, "%s", buf);
-		return 0;
+		if (strlen(buf) == 40) {
+			snprintf(out_commit_sha, 64, "%s", buf);
+			return 0;
+		}
 	}
 	return -1;
 }

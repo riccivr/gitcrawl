@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-artifacts:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            os: ubuntu-latest
+            artifact_name: gitcrawl-linux-amd64.tar.gz
+            cmd: |
+              make clean
+              make CFLAGS="-std=c99 -Wall -Wextra -pedantic -O2 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_GNU_SOURCE -DVERSION=\"${GITHUB_REF_NAME#v}\"" LDFLAGS="-lz"
+              tar -czvf gitcrawl-linux-amd64.tar.gz gitcrawl gitcrawl.1 LICENSE README.md
+
+          - target: darwin-universal
+            os: macos-latest
+            artifact_name: gitcrawl-darwin-universal.tar.gz
+            cmd: |
+              make clean
+              make CFLAGS="-std=c99 -Wall -Wextra -pedantic -O2 -arch x86_64 -arch arm64 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_GNU_SOURCE -DVERSION=\"${GITHUB_REF_NAME#v}\"" LDFLAGS="-arch x86_64 -arch arm64 -lz"
+              tar -czvf gitcrawl-darwin-universal.tar.gz gitcrawl gitcrawl.1 LICENSE README.md
+
+          - target: windows-amd64
+            os: windows-latest
+            artifact_name: gitcrawl-windows-amd64.zip
+            cmd: |
+              make clean
+              make CC=gcc CFLAGS="-std=c99 -Wall -Wextra -O2 -DNO_ZLIB -DVERSION=\"${GITHUB_REF_NAME#v}\"" LDFLAGS=""
+              cp gitcrawl gitcrawl.exe 2>/dev/null || true
+              zip -r gitcrawl-windows-amd64.zip gitcrawl.exe LICENSE README.md
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: make mingw-w64-x86_64-gcc zip
+
+      - name: Build Unix Binary
+        if: matrix.os != 'windows-latest'
+        run: ${{ matrix.cmd }}
+
+      - name: Build Windows Binary
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: ${{ matrix.cmd }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.artifact_name }}
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-release-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Build Source Tarball
+        run: |
+          make dist
+          cp gitcrawl-*.tar.gz release-assets/
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true

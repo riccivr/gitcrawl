@@ -2,34 +2,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <ctype.h>
 #include <time.h>
-#include <zlib.h>
+#include <stdint.h>
 #include "fetcher.h"
 #include "sanitizer.h"
 #include "parser.h"
 #include "strbuf.h"
 
-void
-crawl_page_data_init(struct crawl_page_data *page)
-{
-	memset(page, 0, sizeof(*page));
-	page->status_code = 200;
-	strcpy(page->content_type, "text/html; charset=utf-8");
-}
-
-void
-crawl_page_data_free(struct crawl_page_data *page)
-{
-	if (page->raw_html) free(page->raw_html);
-	if (page->sanitized_html) free(page->sanitized_html);
-	if (page->markdown) free(page->markdown);
-	if (page->metadata_json) free(page->metadata_json);
-	if (page->html_gz) free(page->html_gz);
-	memset(page, 0, sizeof(*page));
-}
-
+#if !defined(NO_ZLIB) && (defined(__unix__) || defined(__APPLE__) || defined(__linux__))
+#include <zlib.h>
 static int
 gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *out_len)
 {
@@ -63,6 +45,129 @@ gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *o
 	deflateEnd(&strm);
 	return 0;
 }
+#else
+/* Standalone RFC 1952 Gzip compressor with uncompressed deflate blocks for zero-dep targets */
+static uint32_t
+calc_crc32(const unsigned char *buf, size_t len)
+{
+	static uint32_t table[256];
+	static int have_table = 0;
+	if (!have_table) {
+		for (uint32_t i = 0; i < 256; i++) {
+			uint32_t rem = i;
+			for (int j = 0; j < 8; j++) {
+				if (rem & 1) rem = (rem >> 1) ^ 0xEDB88320;
+				else rem >>= 1;
+			}
+			table[i] = rem;
+		}
+		have_table = 1;
+	}
+	uint32_t crc = 0xFFFFFFFF;
+	for (size_t i = 0; i < len; i++) {
+		crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+	}
+	return crc ^ 0xFFFFFFFF;
+}
+
+static int
+gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *out_len)
+{
+	/* Header (10 bytes) + Deflate Blocks + Trailer (8 bytes) */
+	size_t num_blocks = (src_len + 65534) / 65535;
+	if (num_blocks == 0) num_blocks = 1;
+	size_t max_out = 10 + (num_blocks * 5) + src_len + 8;
+	unsigned char *buf = malloc(max_out);
+	if (!buf) return -1;
+
+	size_t pos = 0;
+	/* Gzip header */
+	buf[pos++] = 0x1F;
+	buf[pos++] = 0x8B;
+	buf[pos++] = 0x08; /* DEFLATE */
+	buf[pos++] = 0x00; /* Flags */
+	buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x00; /* MTIME */
+	buf[pos++] = 0x02; /* XFL (max compression) */
+	buf[pos++] = 0x03; /* OS (Unix) */
+
+	/* Uncompressed Deflate Blocks */
+	size_t remaining = src_len;
+	const unsigned char *in = (const unsigned char *)src;
+	while (remaining > 0 || pos == 10) {
+		uint16_t block_len = (remaining > 65535) ? 65535 : (uint16_t)remaining;
+		uint8_t is_final = (remaining <= 65535) ? 1 : 0;
+		buf[pos++] = is_final; /* BFINAL=is_final, BTYPE=00 (stored) */
+		buf[pos++] = (uint8_t)(block_len & 0xFF);
+		buf[pos++] = (uint8_t)((block_len >> 8) & 0xFF);
+		uint16_t nlen = ~block_len;
+		buf[pos++] = (uint8_t)(nlen & 0xFF);
+		buf[pos++] = (uint8_t)((nlen >> 8) & 0xFF);
+
+		if (block_len > 0) {
+			memcpy(buf + pos, in, block_len);
+			pos += block_len;
+			in += block_len;
+			remaining -= block_len;
+		} else {
+			break;
+		}
+	}
+
+	/* Gzip trailer: CRC32 + ISIZE */
+	uint32_t crc = calc_crc32((const unsigned char *)src, src_len);
+	uint32_t isize = (uint32_t)(src_len & 0xFFFFFFFF);
+	buf[pos++] = (uint8_t)(crc & 0xFF);
+	buf[pos++] = (uint8_t)((crc >> 8) & 0xFF);
+	buf[pos++] = (uint8_t)((crc >> 16) & 0xFF);
+	buf[pos++] = (uint8_t)((crc >> 24) & 0xFF);
+	buf[pos++] = (uint8_t)(isize & 0xFF);
+	buf[pos++] = (uint8_t)((isize >> 8) & 0xFF);
+	buf[pos++] = (uint8_t)((isize >> 16) & 0xFF);
+	buf[pos++] = (uint8_t)((isize >> 24) & 0xFF);
+
+	*out_len = pos;
+	*out_gz = buf;
+	return 0;
+}
+#endif
+
+void
+crawl_page_data_init(struct crawl_page_data *page)
+{
+	memset(page, 0, sizeof(*page));
+	page->status_code = 200;
+	strcpy(page->content_type, "text/html; charset=utf-8");
+}
+
+void
+crawl_page_data_free(struct crawl_page_data *page)
+{
+	if (page->raw_html) free(page->raw_html);
+	if (page->sanitized_html) free(page->sanitized_html);
+	if (page->markdown) free(page->markdown);
+	if (page->metadata_json) free(page->metadata_json);
+	if (page->html_gz) free(page->html_gz);
+	memset(page, 0, sizeof(*page));
+}
+
+static const char *
+gitcrawl_ci_find(const char *haystack, const char *needle)
+{
+	if (!haystack || !needle) return NULL;
+	if (!*needle) return haystack;
+	for (; *haystack; haystack++) {
+		if (tolower((unsigned char)*haystack) == tolower((unsigned char)*needle)) {
+			const char *h = haystack + 1;
+			const char *n = needle + 1;
+			while (*n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) {
+				h++;
+				n++;
+			}
+			if (!*n) return haystack;
+		}
+	}
+	return NULL;
+}
 
 static void
 extract_outgoing_links(const char *html, size_t len, const char *base_url, struct crawl_link_queue *queue)
@@ -78,7 +183,7 @@ extract_outgoing_links(const char *html, size_t len, const char *base_url, struc
 				size_t tlen = tag_end - p + 1;
 				if (tlen < sizeof(tag_buf)) {
 					memcpy(tag_buf, p, tlen);
-					const char *href_pos = strcasestr(tag_buf, "href=");
+					const char *href_pos = gitcrawl_ci_find(tag_buf, "href=");
 					if (href_pos) {
 						href_pos += 5;
 						while (*href_pos && isspace((unsigned char)*href_pos)) href_pos++;
@@ -140,8 +245,8 @@ build_metadata_json(struct crawl_page_data *page)
 	strbuf_printf(&sb, "  \"etag\": \"%s\",\n", page->etag);
 	strbuf_printf(&sb, "  \"last_modified\": \"%s\",\n", page->last_modified);
 	strbuf_printf(&sb, "  \"server\": \"%s\",\n", page->server);
-	strbuf_printf(&sb, "  \"raw_bytes\": %zu,\n", page->raw_len);
-	strbuf_printf(&sb, "  \"markdown_bytes\": %zu\n", page->md_len);
+	strbuf_printf(&sb, "  \"raw_bytes\": %lu,\n", (unsigned long)page->raw_len);
+	strbuf_printf(&sb, "  \"markdown_bytes\": %lu\n", (unsigned long)page->md_len);
 	strbuf_append_str(&sb, "}\n");
 
 	page->metadata_json = strbuf_detach(&sb, &page->json_len);
@@ -203,19 +308,19 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 			}
 
 			while ((line = strtok(NULL, "\r\n")) != NULL) {
-				if (strncasecmp(line, "content-type:", 13) == 0) {
+				if (gitcrawl_ci_find(line, "content-type:") == line) {
 					char *val = line + 13;
 					while (*val && isspace((unsigned char)*val)) val++;
 					snprintf(page->content_type, sizeof(page->content_type), "%s", val);
-				} else if (strncasecmp(line, "etag:", 5) == 0) {
+				} else if (gitcrawl_ci_find(line, "etag:") == line) {
 					char *val = line + 5;
 					while (*val && isspace((unsigned char)*val)) val++;
 					snprintf(page->etag, sizeof(page->etag), "%s", val);
-				} else if (strncasecmp(line, "last-modified:", 14) == 0) {
+				} else if (gitcrawl_ci_find(line, "last-modified:") == line) {
 					char *val = line + 14;
 					while (*val && isspace((unsigned char)*val)) val++;
 					snprintf(page->last_modified, sizeof(page->last_modified), "%s", val);
-				} else if (strncasecmp(line, "server:", 7) == 0) {
+				} else if (gitcrawl_ci_find(line, "server:") == line) {
 					char *val = line + 7;
 					while (*val && isspace((unsigned char)*val)) val++;
 					snprintf(page->server, sizeof(page->server), "%s", val);

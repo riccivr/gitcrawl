@@ -2,11 +2,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <ctype.h>
 #include "parser.h"
 #include "strbuf.h"
 #include "entity.h"
+
+static int
+ci_equal_n(const char *a, const char *b, size_t n)
+{
+	for (size_t i = 0; i < n; i++) {
+		if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i]))
+			return 0;
+	}
+	return 1;
+}
 
 static void
 extract_attribute(const char *tag, const char *attr_name, char *out, size_t cap)
@@ -16,7 +25,7 @@ extract_attribute(const char *tag, const char *attr_name, char *out, size_t cap)
 	const char *p = tag;
 
 	while (*p) {
-		if (strncasecmp(p, attr_name, alen) == 0 &&
+		if (ci_equal_n(p, attr_name, alen) &&
 		    (isspace((unsigned char)p[alen]) || p[alen] == '=')) {
 			p += alen;
 			while (*p && isspace((unsigned char)*p)) p++;

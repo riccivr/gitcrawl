@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test-linux:
+    name: Test (Linux gcc/clang)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [ gcc, clang ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and Test
+        run: |
+          make clean
+          make CC=${{ matrix.cc }}
+          make test CC=${{ matrix.cc }}
+
+  test-macos:
+    name: Test (macOS clang)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and Test
+        run: |
+          make clean
+          make
+          make test

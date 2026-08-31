@@ -1,4 +1,5 @@
 gitcrawl
+gitcrawl.exe
 *.o
 *.a
 *.tar.gz

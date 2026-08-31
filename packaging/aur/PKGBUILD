@@ -1,0 +1,22 @@
+# Maintainer: Ricardo Veronese Ricci <riccivr@users.noreply.github.com>
+pkgname=gitcrawl
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Git-native content-addressable web archival engine and crawler"
+arch=('x86_64' 'aarch64')
+url="https://github.com/riccivr/gitcrawl"
+license=('MIT')
+depends=('git' 'curl' 'zlib')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/riccivr/gitcrawl/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    make
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    make PREFIX="/usr" DESTDIR="$pkgdir" install
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

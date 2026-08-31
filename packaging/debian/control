@@ -1,0 +1,14 @@
+Source: gitcrawl
+Section: utils
+Priority: optional
+Maintainer: Ricardo Veronese Ricci <riccivr@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), zlib1g-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/riccivr/gitcrawl
+
+Package: gitcrawl
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, git, curl
+Description: Git-native content-addressable web archival engine and crawler
+ gitcrawl crawls web pages and commits their history straight into Git
+ repositories as a content-addressable object store.
