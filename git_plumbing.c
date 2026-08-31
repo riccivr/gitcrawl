@@ -37,7 +37,11 @@ git_repo_init(const char *repo_dir)
 		return 0;
 
 	char cmd[4096];
-	snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\" && git -C \"%s\" init --quiet", dir, dir);
+	snprintf(cmd, sizeof(cmd),
+	         "mkdir -p \"%s\" && git -C \"%s\" init --quiet && "
+	         "git -C \"%s\" config user.name \"gitcrawl\" 2>/dev/null || true; "
+	         "git -C \"%s\" config user.email \"gitcrawl@localhost\" 2>/dev/null || true",
+	         dir, dir, dir, dir);
 	return system(cmd) == 0 ? 0 : -1;
 }
 
@@ -245,12 +249,14 @@ git_create_commit(const char *repo_dir, const char *tree_sha, const char *parent
                  const char *msg, char *out_commit_sha)
 {
 	char cmd[4096];
+	const char *env_prefix = "GIT_AUTHOR_NAME=\"gitcrawl\" GIT_AUTHOR_EMAIL=\"gitcrawl@localhost\" "
+	                         "GIT_COMMITTER_NAME=\"gitcrawl\" GIT_COMMITTER_EMAIL=\"gitcrawl@localhost\"";
 	if (parent_sha && *parent_sha) {
-		snprintf(cmd, sizeof(cmd), "git -C \"%s\" commit-tree \"%s\" -p \"%s\" -m \"%s\" 2>/dev/null",
-		         repo_dir ? repo_dir : ".", tree_sha, parent_sha, msg ? msg : "webcrawl snapshot");
+		snprintf(cmd, sizeof(cmd), "%s git -C \"%s\" commit-tree \"%s\" -p \"%s\" -m \"%s\" 2>/dev/null",
+		         env_prefix, repo_dir ? repo_dir : ".", tree_sha, parent_sha, msg ? msg : "webcrawl snapshot");
 	} else {
-		snprintf(cmd, sizeof(cmd), "git -C \"%s\" commit-tree \"%s\" -m \"%s\" 2>/dev/null",
-		         repo_dir ? repo_dir : ".", tree_sha, msg ? msg : "initial webcrawl snapshot");
+		snprintf(cmd, sizeof(cmd), "%s git -C \"%s\" commit-tree \"%s\" -m \"%s\" 2>/dev/null",
+		         env_prefix, repo_dir ? repo_dir : ".", tree_sha, msg ? msg : "initial webcrawl snapshot");
 	}
 
 	FILE *fp = popen(cmd, "r");
