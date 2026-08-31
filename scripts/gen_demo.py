@@ -100,7 +100,7 @@ def run_and_record(cmd_display, shell_cmd, prompt="riccivr@workstation:~$ ", pau
 add_event(0.0, "\x1b[2J\x1b[H")
 
 # 1. Version check
-run_and_record("gitcrawl -v", "./gitcrawl -v", pause_after=1.2)
+run_and_record("gitcrawl version", "./gitcrawl version", pause_after=1.2)
 
 # 2. Archive snapshot 1
 run_and_record("cat /tmp/doc_v1.html | gitcrawl archive -d " + DEMO_REPO + " -i https://docs.kernel.org/process/submitting-patches.html",

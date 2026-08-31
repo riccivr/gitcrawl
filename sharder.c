@@ -129,6 +129,9 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 	for (size_t i = 0; host_buf[i]; i++)
 		out->host[i] = (char)tolower((unsigned char)host_buf[i]);
 
+	if (strlen(out->scheme) == 0 || strlen(out->host) == 0)
+		return -1;
+
 	p = host_end;
 	const char *query_start = strchr(p, '?');
 	const char *frag_start = strchr(p, '#');

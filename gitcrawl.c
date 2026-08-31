@@ -11,7 +11,7 @@ static void
 usage(int status)
 {
 	fprintf(status == 0 ? stdout : stderr,
-		"usage: %s [-vh] <command> [options] [arguments]\n\n"
+		"usage: gitcrawl <command> [options] [arguments]\n\n"
 		"Commands:\n"
 		"  archive <url>          Archive a single URL or stdin stream directly into Git\n"
 		"  crawl <url>            Recursively crawl and snapshot pages into Git\n"
@@ -20,7 +20,9 @@ usage(int status)
 		"  log <url>              Show commit history for an archived URL\n"
 		"  show <url>             Display archived markdown, html, or metadata json\n"
 		"  list                   List all archived URLs in the Git repository\n"
-		"  gc                     Optimize repository packfiles and prune loose objects\n\n"
+		"  gc                     Optimize repository packfiles and prune loose objects\n"
+		"  version                Display version information\n"
+		"  help                   Display this help message\n\n"
 		"Options:\n"
 		"  -b branch              Target branch (default: archive)\n"
 		"  -d repo_dir            Git repository path (default: .)\n"
@@ -31,9 +33,6 @@ usage(int status)
 		"  -f format              Output format for show (md, html, json)\n"
 		"  -i                     Read content from stdin for the specified URL\n"
 		"  -z                     Fuzzy search mode\n"
-		"  -v                     Display version information\n"
-		"  -h                     Display this help message\n",
-		argv0 ? argv0 : "gitcrawl"
 	);
 	exit(status);
 }
@@ -126,11 +125,7 @@ cmd_archive(int argc, char **argv, const char *repo_dir, const char *branch, con
 		target = argv[0];
 
 	if (!target && !use_stdin) {
-		if (!isatty(STDIN_FILENO)) {
-			use_stdin = 1;
-		} else {
-			usage(1);
-		}
+		usage(1);
 	}
 
 	struct crawl_page_data page;

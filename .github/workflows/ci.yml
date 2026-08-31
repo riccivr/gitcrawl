@@ -21,9 +21,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build and Test
+      - name: Build and Test All
         run: |
           make CC=${{ matrix.compiler }} clean
           make CC=${{ matrix.compiler }}
-          make CC=${{ matrix.compiler }} test
+          make CC=${{ matrix.compiler }} test-all
+          make CC=${{ matrix.compiler }} bench
 
+      - name: Run Sanitizers (Linux clang only)
+        if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'clang'
+        run: |
+          make sanitize

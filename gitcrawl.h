@@ -2,10 +2,6 @@
 #ifndef GITCRAWL_H
 #define GITCRAWL_H
 
-#ifndef VERSION
-#define VERSION "1.0.0"
-#endif
-
 #include "arg.h"
 #include "strbuf.h"
 #include "entity.h"

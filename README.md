@@ -94,12 +94,25 @@ Static binaries for Linux, macOS, and Windows are attached to each release:
 
 Download from [GitHub Releases](https://github.com/riccivr/gitcrawl/releases)
 
-Running tests
--------------
-The test suite covers URL sharding, DOM sanitization, HTML-to-Markdown parsing, Git plumbing, and end-to-end integration:
+Running tests & benchmarks
+---------------------------
+`gitcrawl` includes a rigorous multi-tier test suite covering unit tests, POSIX edge cases, property-based invariants, fuzz resilience, high-throughput stress tests, sanitizers, and benchmarks:
 
 ```sh
+# Run standard unit & integration test suite
 make test
+
+# Run all test suites (unit, POSIX, property invariants, fuzz, stress)
+make test-all
+
+# Run micro and end-to-end performance benchmarks
+make bench
+
+# Run test suite with AddressSanitizer and UndefinedBehaviorSanitizer
+make sanitize
+
+# Run Valgrind memory leak verification
+make valgrind
 ```
 
 Usage
