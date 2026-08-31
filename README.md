@@ -176,7 +176,3 @@ gitcrawl show https://docs.kernel.org/process/submitting-patches.html -f json
 ```bash
 gitcrawl gc
 ```
-
-License
--------
-MIT (c) 2026 Ricardo Veronese Ricci
