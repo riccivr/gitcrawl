@@ -11,7 +11,7 @@ static void
 usage(int status)
 {
 	fprintf(status == 0 ? stdout : stderr,
-		"usage: gitcrawl <command> [options] [arguments]\n\n"
+		"usage: %s [-vh] <command> [options] [arguments]\n\n"
 		"Commands:\n"
 		"  archive <url>          Archive a single URL or stdin stream directly into Git\n"
 		"  crawl <url>            Recursively crawl and snapshot pages into Git\n"
@@ -20,9 +20,7 @@ usage(int status)
 		"  log <url>              Show commit history for an archived URL\n"
 		"  show <url>             Display archived markdown, html, or metadata json\n"
 		"  list                   List all archived URLs in the Git repository\n"
-		"  gc                     Optimize repository packfiles and prune loose objects\n"
-		"  version                Display version information\n"
-		"  help                   Display this help message\n\n"
+		"  gc                     Optimize repository packfiles and prune loose objects\n\n"
 		"Options:\n"
 		"  -b branch              Target branch (default: archive)\n"
 		"  -d repo_dir            Git repository path (default: .)\n"
@@ -33,6 +31,9 @@ usage(int status)
 		"  -f format              Output format for show (md, html, json)\n"
 		"  -i                     Read content from stdin for the specified URL\n"
 		"  -z                     Fuzzy search mode\n"
+		"  -v                     Display version information\n"
+		"  -h                     Display this help message\n",
+		argv0 ? argv0 : "gitcrawl"
 	);
 	exit(status);
 }
@@ -402,10 +403,23 @@ main(int argc, char **argv)
 	const char *branch = "archive";
 	const char *commit_msg = NULL;
 
-	if (argc < 2)
+	ARGBEGIN {
+	case 'v':
+	case 'V':
+		puts("gitcrawl-" VERSION);
+		return 0;
+	case 'h':
+		usage(0);
+		break;
+	default:
+		usage(1);
+		break;
+	} ARGEND;
+
+	if (argc < 1)
 		usage(1);
 
-	const char *cmd = argv[1];
+	const char *cmd = argv[0];
 	argv++;
 	argc--;
 
@@ -425,10 +439,10 @@ main(int argc, char **argv)
 		return cmd_list(argc, argv, repo_dir, branch);
 	} else if (strcmp(cmd, "gc") == 0) {
 		return git_run_gc(repo_dir);
-	} else if (strcmp(cmd, "version") == 0 || strcmp(cmd, "-v") == 0 || strcmp(cmd, "--version") == 0) {
-		printf("gitcrawl %s (c) 2026 Ricardo Veronese\n", VERSION);
+	} else if (strcmp(cmd, "-v") == 0 || strcmp(cmd, "-V") == 0 || strcmp(cmd, "version") == 0) {
+		puts("gitcrawl-" VERSION);
 		return 0;
-	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
+	} else if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "help") == 0) {
 		usage(0);
 	} else {
 		fprintf(stderr, "Unknown command: %s\n", cmd);

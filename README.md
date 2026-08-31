@@ -6,7 +6,7 @@ Git-native web archival engine and crawler in clean C99.
 
 Based on the architecture described in [*Preserving the Web with Git*](https://riccivr.github.io/blog/post.html?post=preserving-the-web-with-git).
 
-[![gitcrawl Demo](assets/demo.gif)](https://asciinema.org/a/dEjZ67TgRJDWUe0y)
+[![gitcrawl Demo](assets/demo.gif)](https://asciinema.org/a/j4Cd8YIRe0GsAmDX)
 
 Features
 --------
@@ -106,7 +106,7 @@ Usage
 -----
 
 ```
-gitcrawl <command> [options] [arguments]
+gitcrawl [-vh] <command> [options] [arguments]
 ```
 
 ### Commands
@@ -121,8 +121,6 @@ gitcrawl <command> [options] [arguments]
 | `show <url>` | Display archived markdown (`md`), html (`gz`), or metadata (`json`) |
 | `list` | List all archived URLs in the Git repository |
 | `gc` | Optimize repository packfiles and prune loose objects |
-| `version` | Display version information |
-| `help` | Display help message |
 
 ### Options
 
@@ -137,6 +135,8 @@ gitcrawl <command> [options] [arguments]
 | `-f format` | Output format for `show` (`md`, `html`, `json`) |
 | `-i` | Read content from standard input for the specified URL |
 | `-z` | Enable fuzzy search scoring |
+| `-v` | Display version information |
+| `-h` | Display help message |
 
 Examples
 --------
