@@ -3,6 +3,7 @@
 #define APPROX_SEARCH_H
 
 #include <stddef.h>
+#include "approx.h"
 
 int approx_match_score(const char *pattern, const char *str);
 int gitcrawl_search_repo(const char *repo_dir, const char *branch, const char *query, int fuzzy);
