@@ -8,6 +8,10 @@ gitcrawl.exe
 build/
 dist/
 /tmp/
-test_*
-!tests/test_*.[ch]
-!tests/run_tests.sh
+tests/test_sharder
+tests/test_sanitizer
+tests/test_parser
+tests/test_git_plumbing
+tests/test_properties
+tests/test_fuzz
+tests/benchmark
