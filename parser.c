@@ -1,11 +1,11 @@
 /* See LICENSE file for copyright and license details. */
+#include "parser.h"
+#include "strbuf.h"
+#include "entity.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include "parser.h"
-#include "strbuf.h"
-#include "entity.h"
 
 static int
 ci_equal_n(const char *a, const char *b, size_t n)
@@ -66,6 +66,8 @@ html_to_markdown(const char *html, size_t len, size_t *out_len)
 
 	int in_pre = 0;
 	int list_depth = 0;
+	int list_type[16] = {0}; /* 0 = ul, 1 = ol */
+	int list_count[16] = {0};
 	int table_col = 0;
 	int table_header = 0;
 
@@ -172,12 +174,30 @@ html_to_markdown(const char *html, size_t len, size_t *out_len)
 						strbuf_append_str(&sb, "\n\n---\n\n");
 					}
 					/* Lists */
-					else if (strcmp(name_only, "ul") == 0 || strcmp(name_only, "ol") == 0) {
+					else if (strcmp(name_only, "ul") == 0) {
 						if (is_closing) {
 							if (list_depth > 0) list_depth--;
 							strbuf_append_str(&sb, "\n");
 						} else {
-							list_depth++;
+							if (list_depth < 15) {
+								list_type[list_depth] = 0;
+								list_count[list_depth] = 0;
+								list_depth++;
+							}
+							if (sb.len > 0 && sb.buf[sb.len - 1] != '\n')
+								strbuf_append_str(&sb, "\n");
+						}
+					}
+					else if (strcmp(name_only, "ol") == 0) {
+						if (is_closing) {
+							if (list_depth > 0) list_depth--;
+							strbuf_append_str(&sb, "\n");
+						} else {
+							if (list_depth < 15) {
+								list_type[list_depth] = 1;
+								list_count[list_depth] = 1;
+								list_depth++;
+							}
 							if (sb.len > 0 && sb.buf[sb.len - 1] != '\n')
 								strbuf_append_str(&sb, "\n");
 						}
@@ -190,7 +210,12 @@ html_to_markdown(const char *html, size_t len, size_t *out_len)
 								strbuf_append_str(&sb, "\n");
 							for (int d = 1; d < list_depth; d++)
 								strbuf_append_str(&sb, "  ");
-							strbuf_append_str(&sb, "- ");
+							int cur_idx = list_depth > 0 ? list_depth - 1 : 0;
+							if (list_type[cur_idx] == 1) {
+								strbuf_printf(&sb, "%d. ", list_count[cur_idx]++);
+							} else {
+								strbuf_append_str(&sb, "- ");
+							}
 						}
 					}
 					/* Links */
@@ -251,34 +276,26 @@ html_to_markdown(const char *html, size_t len, size_t *out_len)
 							strbuf_append_char(&sb, ' ');
 						}
 					}
-
-					p = tag_end + 1;
-					continue;
 				}
+				p = tag_end + 1;
+				continue;
 			}
 		}
 
-		/* Normal characters */
+		/* Text character handling */
 		if (in_pre) {
-			strbuf_append_char(&sb, *p);
+			strbuf_append_char(&sb, *p++);
 		} else {
 			if (isspace((unsigned char)*p)) {
-				if (sb.len > 0 && sb.buf[sb.len - 1] != ' ' && sb.buf[sb.len - 1] != '\n') {
+				if (sb.len > 0 && !isspace((unsigned char)sb.buf[sb.len - 1])) {
 					strbuf_append_char(&sb, ' ');
 				}
+				p++;
 			} else {
-				strbuf_append_char(&sb, *p);
+				strbuf_append_char(&sb, *p++);
 			}
 		}
-		p++;
 	}
-
-	size_t rlen = sb.len;
-	while (rlen > 0 && isspace((unsigned char)sb.buf[rlen - 1])) {
-		sb.buf[--rlen] = '\0';
-	}
-	sb.len = rlen;
-	strbuf_append_char(&sb, '\n');
 
 	return strbuf_detach(&sb, out_len);
 }

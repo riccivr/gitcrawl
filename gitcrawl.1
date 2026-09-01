@@ -1,27 +1,28 @@
-.TH GITCRAWL 1 gitcrawl-1.0.0
+.TH GITCRAWL 1 gitcrawl-1.1.0
 .SH NAME
-gitcrawl \- Git-native content-addressable web archival engine and crawler
+gitcrawl \- Web snapshot utility and crawler for Git repositories
 .SH SYNOPSIS
 .B gitcrawl
+[\fI-vh\fR]
 .I command
 [\fIoptions\fR]
 [\fIarguments\fR]
 .SH DESCRIPTION
 .B gitcrawl
-is a fast, zero-dependency C99 CLI tool that crawls web pages and commits their history
-straight into Git repositories as a content-addressable object store.
+is a fast, lightweight C99 CLI tool that captures web pages and commits their history
+directly into Git repositories.
 .PP
-It sanitizes dynamic web noise (CSRF tokens, dynamic banners, ads), generates clean,
-diff-friendly Markdown for rapid terminal inspection via \fBgit diff\fR, and bypasses
-the working tree by writing blobs, trees, and atomic commits directly to \fB.git/objects\fR.
+It strips dynamic noise (scripts, tracking pixels, cookie banners, CSRF nonces),
+generates clean, diff-friendly Markdown for rapid inspection via \fBgit diff\fR,
+and stores the original compressed HTML and JSON metadata alongside it in Git.
 .SH COMMANDS
 .TP
 .B archive \fIurl\fR
 Fetches and archives a single URL into the target Git repository branch.
-If \fIurl\fR is omitted and stdin is a pipe, archives stream input.
+If stdin is piped, archives standard input.
 .TP
 .B crawl \fIurl\fR
-Recursively crawls a website up to a specified depth and page limit, archiving all pages directly into Git.
+Recursively crawls a website up to a specified depth and page limit, archiving pages into Git.
 .TP
 .B diff \fIurl\fR [\fIcommit1\fR] [\fIcommit2\fR]
 Shows the clean markdown diff of a URL between two revisions or against the previous commit.
@@ -33,7 +34,7 @@ Searches archived URLs, paths, and historical snapshots with fuzzy score ranking
 Displays the Git commit history and changelog for a specific URL.
 .TP
 .B show \fIurl\fR
-Prints the archived Markdown, original compressed HTML, or metadata JSON for a URL.
+Prints the archived Markdown (\fImd\fR), original compressed HTML (\fIgz\fR), or metadata (\fIjson\fR) for a URL.
 .TP
 .B list
 Lists all archived endpoints in the repository branch.
@@ -58,7 +59,7 @@ Maximum crawl recursion depth (default: \fI1\fR).
 Maximum number of pages to crawl (default: \fI50\fR).
 .TP
 .B \-s
-Restrict crawler to the same domain.
+Restrict crawler to the same domain (default: off).
 .TP
 .BI \-f " format"
 Output format for \fBshow\fR (\fImd\fR, \fIhtml\fR, or \fIjson\fR).
@@ -67,7 +68,13 @@ Output format for \fBshow\fR (\fImd\fR, \fIhtml\fR, or \fIjson\fR).
 Read content from stdin for the specified URL.
 .TP
 .B \-z
-Enable fuzzy search matching.
+Enable fuzzy search matching via \fBapprox.h\fR.
+.TP
+.B \-v
+Display version information.
+.TP
+.B \-h
+Display help message.
 .SH AUTHORS
 Ricardo Veronese Ricci <riccivr>
 .SH SEE ALSO

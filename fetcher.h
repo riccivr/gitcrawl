@@ -3,12 +3,18 @@
 #define FETCHER_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include "sharder.h"
 
 struct crawl_link_queue {
-	char urls[512][8192];
-	int count;
+	char **urls;
+	size_t count;
+	size_t cap;
 };
+
+void crawl_link_queue_init(struct crawl_link_queue *q);
+void crawl_link_queue_push(struct crawl_link_queue *q, const char *url);
+void crawl_link_queue_free(struct crawl_link_queue *q);
 
 struct crawl_page_data {
 	struct parsed_url url_info;

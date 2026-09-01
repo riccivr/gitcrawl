@@ -60,5 +60,28 @@ echo "  [posix] list command verified"
 ./gitcrawl gc -d "$TEST_REPO"
 echo "  [posix] gc repository maintenance verified"
 
+# Test 10: Shell Injection Resilience Test
+INJECT_CANARY="/tmp/gitcrawl_inject_canary"
+rm -f "$INJECT_CANARY"
+echo "<h1>Injection Test</h1>" | ./gitcrawl archive -d "$TEST_REPO" -b feature-posix -m "msg\"; touch $INJECT_CANARY; echo \"" -i "https://example.com/inject?q=\";touch+$INJECT_CANARY;\""
+if [ -f "$INJECT_CANARY" ]; then
+    echo "SECURITY FAIL: Shell injection canary was created!"
+    exit 1
+fi
+echo "  [posix] shell injection resistance verified"
+
+# Test 11: SHA-256 Git Repository Support
+SHA256_REPO="/tmp/gitcrawl_sha256_repo"
+rm -rf "$SHA256_REPO"
+mkdir -p "$SHA256_REPO"
+git -C "$SHA256_REPO" init --object-format=sha256 --quiet
+echo "<h1>SHA256 Test</h1><p>Testing SHA-256 Git object formatting</p>" | ./gitcrawl archive -d "$SHA256_REPO" -b sha256-branch -i https://example.com/sha256-page
+SHA256_COMMIT=$(git -C "$SHA256_REPO" rev-parse refs/heads/sha256-branch)
+[ ${#SHA256_COMMIT} -eq 64 ]
+SHA256_SHOW=$(./gitcrawl show -d "$SHA256_REPO" -b sha256-branch -f md https://example.com/sha256-page)
+echo "$SHA256_SHOW" | grep -q "# SHA256 Test"
+rm -rf "$SHA256_REPO"
+echo "  [posix] SHA-256 object format compatibility verified"
+
 rm -rf "$TEST_REPO"
 echo "POSIX CLI Compliance Tests passed successfully!"

@@ -1,10 +1,11 @@
 include config.mk
 
-SRC = strbuf.c entity.c sharder.c sanitizer.c parser.c git_plumbing.c approx_search.c fetcher.c gitcrawl.c
+SRC = strbuf.c process_utils.c entity.c sharder.c sanitizer.c parser.c git_plumbing.c approx_search.c fetcher.c gitcrawl.c
 OBJ = $(SRC:.c=.o)
 
-TEST_SRC = tests/test_sharder.c tests/test_sanitizer.c tests/test_parser.c tests/test_git_plumbing.c
-TEST_BIN = tests/test_sharder tests/test_sanitizer tests/test_parser tests/test_git_plumbing
+TEST_SRC = tests/test_sharder.c tests/test_sanitizer.c tests/test_parser.c tests/test_git_plumbing.c tests/test_properties.c tests/test_fuzz.c
+TEST_BIN = tests/test_sharder tests/test_sanitizer tests/test_parser tests/test_git_plumbing tests/test_properties tests/test_fuzz
+BENCH_BIN = tests/benchmark
 
 all: gitcrawl
 
@@ -13,10 +14,6 @@ all: gitcrawl
 
 gitcrawl: $(OBJ)
 	$(CC) $(OBJ) $(LDFLAGS) -o $@
-
-TEST_SRC = tests/test_sharder.c tests/test_sanitizer.c tests/test_parser.c tests/test_git_plumbing.c tests/test_properties.c tests/test_fuzz.c
-TEST_BIN = tests/test_sharder tests/test_sanitizer tests/test_parser tests/test_git_plumbing tests/test_properties tests/test_fuzz
-BENCH_BIN = tests/benchmark
 
 test: $(TEST_BIN) gitcrawl
 	@echo "Running unit test suite..."
@@ -50,16 +47,16 @@ tests/test_sanitizer: tests/test_sanitizer.c sanitizer.o strbuf.o
 tests/test_parser: tests/test_parser.c parser.o entity.o strbuf.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-tests/test_git_plumbing: tests/test_git_plumbing.c git_plumbing.o strbuf.o
+tests/test_git_plumbing: tests/test_git_plumbing.c git_plumbing.o process_utils.o strbuf.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-tests/test_properties: tests/test_properties.c sharder.o sanitizer.o parser.o entity.o approx_search.o git_plumbing.o strbuf.o
+tests/test_properties: tests/test_properties.c sharder.o sanitizer.o parser.o entity.o approx_search.o git_plumbing.o process_utils.o strbuf.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 tests/test_fuzz: tests/test_fuzz.c sharder.o sanitizer.o parser.o entity.o strbuf.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-tests/benchmark: tests/benchmark.c sanitizer.o parser.o entity.o approx_search.o git_plumbing.o strbuf.o
+tests/benchmark: tests/benchmark.c sanitizer.o parser.o entity.o approx_search.o git_plumbing.o process_utils.o strbuf.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 sanitize: clean
@@ -69,8 +66,8 @@ sanitize: clean
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_sharder.c sharder.c strbuf.c -o tests/test_sharder $(LDFLAGS) -fsanitize=address,undefined
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_sanitizer.c sanitizer.c strbuf.c -o tests/test_sanitizer $(LDFLAGS) -fsanitize=address,undefined
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_parser.c parser.c entity.c strbuf.c -o tests/test_parser $(LDFLAGS) -fsanitize=address,undefined
-	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_git_plumbing.c git_plumbing.c strbuf.c -o tests/test_git_plumbing $(LDFLAGS) -fsanitize=address,undefined
-	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_properties.c sharder.c sanitizer.c parser.c entity.c approx_search.c git_plumbing.c strbuf.c -o tests/test_properties $(LDFLAGS) -fsanitize=address,undefined
+	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_git_plumbing.c git_plumbing.c process_utils.c strbuf.c -o tests/test_git_plumbing $(LDFLAGS) -fsanitize=address,undefined
+	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_properties.c sharder.c sanitizer.c parser.c entity.c approx_search.c git_plumbing.c process_utils.c strbuf.c -o tests/test_properties $(LDFLAGS) -fsanitize=address,undefined
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_fuzz.c sharder.c sanitizer.c parser.c entity.c strbuf.c -o tests/test_fuzz $(LDFLAGS) -fsanitize=address,undefined
 	@for t in $(TEST_BIN); do ./$$t || exit 1; done
 	@sh tests/run_tests.sh

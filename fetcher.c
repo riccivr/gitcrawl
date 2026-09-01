@@ -1,28 +1,28 @@
 /* See LICENSE file for copyright and license details. */
+#include "fetcher.h"
+#include "sanitizer.h"
+#include "parser.h"
+#include "process_utils.h"
+#include "strbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
-#include <stdint.h>
-#include "fetcher.h"
-#include "sanitizer.h"
-#include "parser.h"
-#include "strbuf.h"
 
-#if !defined(NO_ZLIB) && (defined(__unix__) || defined(__APPLE__) || defined(__linux__))
+#if !defined(NO_ZLIB)
 #include <zlib.h>
 static int
 gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *out_len)
 {
 	z_stream strm;
 	memset(&strm, 0, sizeof(strm));
-
+	/* 15 + 16 enables gzip format with headers and CRC */
 	if (deflateInit2(&strm, Z_BEST_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
 		return -1;
 
-	size_t buf_size = src_len + 512;
-	unsigned char *buf = malloc(buf_size);
+	size_t bound = deflateBound(&strm, src_len) + 64;
+	unsigned char *buf = malloc(bound);
 	if (!buf) {
 		deflateEnd(&strm);
 		return -1;
@@ -31,57 +31,43 @@ gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *o
 	strm.next_in = (Bytef *)src;
 	strm.avail_in = (uInt)src_len;
 	strm.next_out = buf;
-	strm.avail_out = (uInt)buf_size;
+	strm.avail_out = (uInt)bound;
 
-	int ret = deflate(&strm, Z_FINISH);
-	if (ret != Z_STREAM_END) {
-		free(buf);
+	if (deflate(&strm, Z_FINISH) != Z_STREAM_END) {
 		deflateEnd(&strm);
+		free(buf);
 		return -1;
 	}
 
 	*out_len = strm.total_out;
-	*out_gz = buf;
 	deflateEnd(&strm);
+	*out_gz = buf;
 	return 0;
 }
 #else
-/* Standalone RFC 1952 Gzip compressor with uncompressed deflate blocks for zero-dep targets */
 static uint32_t
 calc_crc32(const unsigned char *buf, size_t len)
 {
-	static uint32_t table[256];
-	static int have_table = 0;
-	if (!have_table) {
-		for (uint32_t i = 0; i < 256; i++) {
-			uint32_t rem = i;
-			for (int j = 0; j < 8; j++) {
-				if (rem & 1) rem = (rem >> 1) ^ 0xEDB88320;
-				else rem >>= 1;
-			}
-			table[i] = rem;
-		}
-		have_table = 1;
-	}
 	uint32_t crc = 0xFFFFFFFF;
 	for (size_t i = 0; i < len; i++) {
-		crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+		crc ^= buf[i];
+		for (int k = 0; k < 8; k++) {
+			crc = (crc >> 1) ^ (0xEDB88320 & (-(int)(crc & 1)));
+		}
 	}
-	return crc ^ 0xFFFFFFFF;
+	return ~crc;
 }
 
 static int
 gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *out_len)
 {
-	/* Header (10 bytes) + Deflate Blocks + Trailer (8 bytes) */
-	size_t num_blocks = (src_len + 65534) / 65535;
-	if (num_blocks == 0) num_blocks = 1;
-	size_t max_out = 10 + (num_blocks * 5) + src_len + 8;
-	unsigned char *buf = malloc(max_out);
+	size_t max_blocks = (src_len / 65535) + 1;
+	size_t bound = 10 + (max_blocks * 5) + src_len + 8 + 32;
+	unsigned char *buf = malloc(bound);
 	if (!buf) return -1;
 
 	size_t pos = 0;
-	/* Gzip header */
+	/* Gzip header: ID1, ID2, CM, FLG, MTIME, XFL, OS */
 	buf[pos++] = 0x1F;
 	buf[pos++] = 0x8B;
 	buf[pos++] = 0x08; /* DEFLATE */
@@ -132,11 +118,51 @@ gzip_compress(const void *src, size_t src_len, unsigned char **out_gz, size_t *o
 #endif
 
 void
+crawl_link_queue_init(struct crawl_link_queue *q)
+{
+	q->urls = NULL;
+	q->count = 0;
+	q->cap = 0;
+}
+
+void
+crawl_link_queue_push(struct crawl_link_queue *q, const char *url)
+{
+	if (!url || !*url) return;
+	if (q->count >= q->cap) {
+		size_t ncap = q->cap == 0 ? 32 : q->cap * 2;
+		char **nurls = realloc(q->urls, ncap * sizeof(char *));
+		if (!nurls) return;
+		q->urls = nurls;
+		q->cap = ncap;
+	}
+	char *dup = strdup(url);
+	if (dup) {
+		q->urls[q->count++] = dup;
+	}
+}
+
+void
+crawl_link_queue_free(struct crawl_link_queue *q)
+{
+	if (q->urls) {
+		for (size_t i = 0; i < q->count; i++) {
+			free(q->urls[i]);
+		}
+		free(q->urls);
+		q->urls = NULL;
+	}
+	q->count = 0;
+	q->cap = 0;
+}
+
+void
 crawl_page_data_init(struct crawl_page_data *page)
 {
 	memset(page, 0, sizeof(*page));
 	page->status_code = 200;
 	strcpy(page->content_type, "text/html; charset=utf-8");
+	crawl_link_queue_init(&page->links);
 }
 
 void
@@ -147,6 +173,7 @@ crawl_page_data_free(struct crawl_page_data *page)
 	if (page->markdown) free(page->markdown);
 	if (page->metadata_json) free(page->metadata_json);
 	if (page->html_gz) free(page->html_gz);
+	crawl_link_queue_free(&page->links);
 	memset(page, 0, sizeof(*page));
 }
 
@@ -175,7 +202,7 @@ extract_outgoing_links(const char *html, size_t len, const char *base_url, struc
 	const char *p = html;
 	const char *end = html + len;
 
-	while (p < end && queue->count < 512) {
+	while (p < end) {
 		if (*p == '<' && p + 2 < end && (p[1] == 'a' || p[1] == 'A') && isspace((unsigned char)p[2])) {
 			const char *tag_end = strchr(p, '>');
 			if (tag_end && tag_end < end) {
@@ -204,16 +231,7 @@ extract_outgoing_links(const char *html, size_t len, const char *base_url, struc
 						    strncmp(link_val, "mailto:", 7) != 0) {
 							char resolved[8192] = {0};
 							if (resolve_url(base_url, link_val, resolved, sizeof(resolved)) == 0) {
-								int exists = 0;
-								for (int k = 0; k < queue->count; k++) {
-									if (strcmp(queue->urls[k], resolved) == 0) {
-										exists = 1;
-										break;
-									}
-								}
-								if (!exists) {
-									snprintf(queue->urls[queue->count++], sizeof(queue->urls[0]), "%s", resolved);
-								}
+								crawl_link_queue_push(queue, resolved);
 							}
 						}
 					}
@@ -227,6 +245,32 @@ extract_outgoing_links(const char *html, size_t len, const char *base_url, struc
 }
 
 static void
+json_escape_append(struct strbuf *sb, const char *str)
+{
+	if (!str) return;
+	for (const unsigned char *p = (const unsigned char *)str; *p; p++) {
+		switch (*p) {
+		case '"':  strbuf_append_str(sb, "\\\""); break;
+		case '\\': strbuf_append_str(sb, "\\\\"); break;
+		case '\b': strbuf_append_str(sb, "\\b"); break;
+		case '\f': strbuf_append_str(sb, "\\f"); break;
+		case '\n': strbuf_append_str(sb, "\\n"); break;
+		case '\r': strbuf_append_str(sb, "\\r"); break;
+		case '\t': strbuf_append_str(sb, "\\t"); break;
+		default:
+			if (*p < 0x20) {
+				char hex[8];
+				snprintf(hex, sizeof(hex), "\\u%04x", *p);
+				strbuf_append_str(sb, hex);
+			} else {
+				strbuf_append_char(sb, (char)*p);
+			}
+			break;
+		}
+	}
+}
+
+static void
 build_metadata_json(struct crawl_page_data *page)
 {
 	time_t now = time(NULL);
@@ -236,17 +280,23 @@ build_metadata_json(struct crawl_page_data *page)
 
 	struct strbuf sb;
 	strbuf_init(&sb, 1024);
-	strbuf_append_str(&sb, "{\n");
-	strbuf_printf(&sb, "  \"url\": \"%s\",\n", page->url_info.normalized_url);
-	strbuf_printf(&sb, "  \"status_code\": %d,\n", page->status_code);
-	strbuf_printf(&sb, "  \"crawled_at\": \"%s\",\n", time_buf);
-	strbuf_printf(&sb, "  \"content_type\": \"%s\",\n", page->content_type);
-	strbuf_printf(&sb, "  \"etag\": \"%s\",\n", page->etag);
-	strbuf_printf(&sb, "  \"last_modified\": \"%s\",\n", page->last_modified);
-	strbuf_printf(&sb, "  \"server\": \"%s\",\n", page->server);
-	strbuf_printf(&sb, "  \"raw_bytes\": %lu,\n", (unsigned long)page->raw_len);
-	strbuf_printf(&sb, "  \"markdown_bytes\": %lu\n", (unsigned long)page->md_len);
-	strbuf_append_str(&sb, "}\n");
+
+	strbuf_append_str(&sb, "{\n  \"url\": \"");
+	json_escape_append(&sb, page->url_info.normalized_url);
+	strbuf_append_str(&sb, "\",\n  \"status_code\": ");
+	strbuf_printf(&sb, "%d,\n  \"crawled_at\": \"", page->status_code);
+	json_escape_append(&sb, time_buf);
+	strbuf_append_str(&sb, "\",\n  \"content_type\": \"");
+	json_escape_append(&sb, page->content_type);
+	strbuf_append_str(&sb, "\",\n  \"etag\": \"");
+	json_escape_append(&sb, page->etag);
+	strbuf_append_str(&sb, "\",\n  \"last_modified\": \"");
+	json_escape_append(&sb, page->last_modified);
+	strbuf_append_str(&sb, "\",\n  \"server\": \"");
+	json_escape_append(&sb, page->server);
+	strbuf_append_str(&sb, "\",\n  \"raw_bytes\": ");
+	strbuf_printf(&sb, "%lu,\n  \"markdown_bytes\": %lu\n}\n",
+	              (unsigned long)page->raw_len, (unsigned long)page->md_len);
 
 	page->metadata_json = strbuf_detach(&sb, &page->json_len);
 }
@@ -260,25 +310,18 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 	if (generate_shard_paths(&page->url_info, &page->paths) < 0)
 		return -1;
 
-	char cmd[9000];
-	snprintf(cmd, sizeof(cmd),
-	         "curl -sSL --compressed -A \"gitcrawl/1.0 (+https://github.com/riccivr/gitcrawl)\" -i \"%s\"",
-	         page->url_info.normalized_url);
-
-	FILE *fp = popen(cmd, "r");
-	if (!fp) return -1;
+	const char *argv[] = {
+		"curl", "-sSL", "--compressed",
+		"-A", "gitcrawl/1.1.0 (+https://github.com/riccivr/gitcrawl)",
+		"-i", page->url_info.normalized_url,
+		NULL
+	};
 
 	struct strbuf raw_resp;
 	strbuf_init(&raw_resp, 16384);
 
-	char buf[4096];
-	size_t n;
-	while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-		strbuf_append_len(&raw_resp, buf, n);
-	}
-	int status = pclose(fp);
-
-	if (raw_resp.len == 0 || (status != 0 && raw_resp.len < 10)) {
+	int status = run_cmd_argv(argv, NULL, 0, &raw_resp, NULL, NULL);
+	if (status != 0 || raw_resp.len == 0) {
 		strbuf_free(&raw_resp);
 		return -1;
 	}
@@ -338,11 +381,19 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 
 	page->raw_len = raw_resp.len - (body_start - raw_resp.buf);
 	page->raw_html = malloc(page->raw_len + 1);
+	if (!page->raw_html) {
+		strbuf_free(&raw_resp);
+		return -1;
+	}
 	memcpy(page->raw_html, body_start, page->raw_len);
 	page->raw_html[page->raw_len] = '\0';
 	strbuf_free(&raw_resp);
 
-	gzip_compress(page->raw_html, page->raw_len, &page->html_gz, &page->gz_len);
+	if (gzip_compress(page->raw_html, page->raw_len, &page->html_gz, &page->gz_len) < 0) {
+		page->html_gz = NULL;
+		page->gz_len = 0;
+	}
+
 	page->sanitized_html = sanitize_html(page->raw_html, page->raw_len, &page->sanitized_len);
 	page->markdown = html_to_markdown(page->sanitized_html, page->sanitized_len, &page->md_len);
 	extract_outgoing_links(page->sanitized_html, page->sanitized_len, page->url_info.normalized_url, &page->links);
@@ -371,7 +422,11 @@ ingest_stream_data(const char *url_str, FILE *fp, struct crawl_page_data *page)
 
 	page->raw_html = strbuf_detach(&sb, &page->raw_len);
 
-	gzip_compress(page->raw_html, page->raw_len, &page->html_gz, &page->gz_len);
+	if (gzip_compress(page->raw_html, page->raw_len, &page->html_gz, &page->gz_len) < 0) {
+		page->html_gz = NULL;
+		page->gz_len = 0;
+	}
+
 	page->sanitized_html = sanitize_html(page->raw_html, page->raw_len, &page->sanitized_len);
 	page->markdown = html_to_markdown(page->sanitized_html, page->sanitized_len, &page->md_len);
 	extract_outgoing_links(page->sanitized_html, page->sanitized_len, page->url_info.normalized_url, &page->links);

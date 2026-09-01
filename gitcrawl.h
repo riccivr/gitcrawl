@@ -9,6 +9,7 @@
 #include "sanitizer.h"
 #include "parser.h"
 #include "git_plumbing.h"
+#include "process_utils.h"
 #include "approx_search.h"
 #include "fetcher.h"
 

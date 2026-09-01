@@ -1,35 +1,41 @@
 gitcrawl
 ========
-Git-native web archival engine and crawler in clean C99.
+Lightweight web snapshot utility and crawler for Git repositories in clean C99.
 
-`gitcrawl` archives web pages and commits their history straight into Git repositories as a content-addressable object store.
+`gitcrawl` snapshots web pages and commits their history directly into Git repositories, storing diff-friendly Markdown alongside original compressed HTML and JSON metadata.
 
-Based on the architecture described in [*Preserving the Web with Git*](https://riccivr.github.io/blog/post.html?post=preserving-the-web-with-git).
+Based on the core concept in [*Preserving the Web with Git*](https://riccivr.github.io/blog/post.html?post=preserving-the-web-with-git).
 
 [![gitcrawl Demo](assets/demo.gif)](https://asciinema.org/a/ZxDdqnFFIVMekWNU)
 
+Overview
+--------
+`gitcrawl` archives web pages into a Git branch (`archive` by default) with a clean three-file structure per URL:
+
+* `index.md`: Sanitized HTML converted to Markdown, designed for readable `git diff` and `git log -S` exploration.
+* `index.html.gz`: Deflate-compressed raw HTML body for faithful original backup.
+* `metadata.json`: HTTP status code, response headers, timestamps, and payload sizes with strict JSON escaping.
+
 Features
 --------
-* **Direct-to-Object Ingestion**: Bypasses the working tree by writing blobs, trees, and commits directly to `.git/objects` via Git plumbing.
-* **Two-Tier Storage**:
-  - `index.md`: Clean, sanitized Markdown for crisp, human-readable `git diff` outputs.
-  - `index.html.gz`: Compressed original HTML payload intact.
-  - `metadata.json`: HTTP status, headers, timestamps, and cryptographic hashes.
-* **Noise Sanitization**: Automatically strips CSRF tokens, session cookies, dynamic tracking pixels, ad banners, and timestamp noise before diff generation.
-* **URL Sharding**: Automatically fragments hierarchical URLs into clean directory structures with query parameter normalization.
-* **Fuzzy History Exploration**: Fast fuzzy search algorithms inspired by [`approx`](https://github.com/riccivr/approx) to find historical pages from the shell.
-* **Zero External Dependencies**: Written in standard POSIX C99 with standard libc and zlib.
+* **In-Memory Git Plumbing**: Streams blobs directly into `git hash-object -w --stdin` and builds Git trees in memory without writing temporary files to disk.
+* **Safe Process Execution**: Invokes `git` and `curl` directly via `execvp` argument vectors with piped I/O, completely avoiding `/bin/sh` shell interpolation to prevent command injection.
+* **SHA-1 & SHA-256 Support**: Fully compatible with both standard SHA-1 and modern SHA-256 Git repositories.
+* **DOM Noise Sanitization**: Strips scripts, stylesheets, tracking pixels (`width=1`, `height=1`, `display:none`), cookie banners, and volatile tokens (CSRF nonces, session IDs) before Markdown generation.
+* **Two-Tier Storage**: Produces human-friendly Markdown for version tracking while retaining full original HTML payloads in compressed format.
+* **Fuzzy History Search**: Integrates the official embedded single-header [`approx.h`](https://github.com/riccivr/approx) library (v1.2.0) with Damerau-Levenshtein distance and a bounded Min-Heap for fast top-N search across archived paths.
+* **Minimal Dependencies**: Written in POSIX C99 requiring only `libc`, `zlib`, with `git` and `curl` available on `$PATH`.
 
 Architecture
 ------------
 
 ```
-Raw HTTP Response
+Raw Web Page / stdin
        │
        ▼
-[ Fetch Stream ]
+[ Fetch Engine ] ──> Direct execvp invocation of curl / stdin stream
        │
-       ├── Original Payload ──────> [ Gzip Deflate ] ──────> index.html.gz
+       ├── Original Body ────────> [ Gzip Compression ] ──> index.html.gz
        │
        ▼
 [ DOM Sanitizer ] ──> Strip scripts, tracking pixels, ads, CSRF nonces
@@ -38,7 +44,7 @@ Raw HTTP Response
 [ Stream Parser ] ──> Convert clean DOM into normalized Markdown ──> index.md
        │
        ▼
-[ Git Plumbing  ] ──> Write tree and commit directly to .git/objects (archive branch)
+[ Git Plumbing  ] ──> Stream blobs directly to hash-object & commit to Git ref
 ```
 
 Installation
@@ -46,7 +52,7 @@ Installation
 
 ### Build from source (recommended)
 
-Requirements: a C99 compiler (gcc or clang), make, and zlib.
+Requirements: a C99 compiler (`gcc` or `clang`), `make`, `zlib`, with `git` and `curl` on `$PATH`.
 
 ```sh
 git clone https://github.com/riccivr/gitcrawl.git
@@ -55,7 +61,7 @@ make
 sudo make install
 ```
 
-To install into another directory such as `~/.local`:
+To install into another prefix (e.g. `~/.local`):
 
 ```sh
 make PREFIX="$HOME/.local" install
@@ -76,7 +82,7 @@ yay -S gitcrawl
 
 #### Debian and Ubuntu (.deb)
 ```sh
-sudo dpkg -i gitcrawl_1.0.0_amd64.deb
+sudo dpkg -i gitcrawl_1.1.0_amd64.deb
 ```
 
 #### Windows (Scoop or Chocolatey)
@@ -90,13 +96,11 @@ choco install gitcrawl
 ```
 
 ### Pre-compiled binaries
-Static binaries for Linux, macOS, and Windows are attached to each release:
-
-Download from [GitHub Releases](https://github.com/riccivr/gitcrawl/releases)
+Static binaries for Linux, macOS, and Windows are available from [GitHub Releases](https://github.com/riccivr/gitcrawl/releases).
 
 Running tests & benchmarks
 ---------------------------
-`gitcrawl` includes a rigorous multi-tier test suite covering unit tests, POSIX edge cases, property-based invariants, fuzz resilience, high-throughput stress tests, sanitizers, and benchmarks:
+`gitcrawl` includes a comprehensive multi-tier test suite covering unit tests, POSIX edge cases, property-based invariants, fuzz resilience, high-throughput stress tests, sanitizers, and benchmarks:
 
 ```sh
 # Run standard unit & integration test suite
@@ -144,10 +148,10 @@ gitcrawl [-vh] <command> [options] [arguments]
 | `-m message` | Custom commit message |
 | `-l depth` | Recursion depth for crawling (default: `1`) |
 | `-p max_pages`| Maximum number of pages to crawl (default: `50`) |
-| `-s` | Restrict crawler to the same domain |
+| `-s` | Restrict crawler to the same domain (default: off) |
 | `-f format` | Output format for `show` (`md`, `html`, `json`) |
 | `-i` | Read content from standard input for the specified URL |
-| `-z` | Enable fuzzy search scoring |
+| `-z` | Enable fuzzy search scoring via `approx.h` |
 | `-v` | Display version information |
 | `-h` | Display help message |
 
@@ -198,7 +202,7 @@ $ gitcrawl show -f json https://docs.kernel.org/process/submitting-patches.html
   "status_code": 200,
   "crawled_at": "2026-08-31T23:20:15Z",
   "content_type": "text/html; charset=utf-8",
-  "etag": ""1f8a-5e290"",
+  "etag": "\"1f8a-5e290\"",
   "last_modified": "Mon, 31 Aug 2026 18:00:00 GMT",
   "server": "nginx",
   "raw_bytes": 48210,
@@ -221,7 +225,7 @@ index b3f1a20..e8412c9 100644
 ```
 
 ### 5. Fuzzy search historical snapshots
-Fuzzy-rank all archived paths and historical commits using `approx` scoring:
+Fuzzy-rank all archived paths and historical commits using `approx.h` scoring:
 
 ```sh
 $ gitcrawl search -z "submitting patch"
@@ -249,9 +253,8 @@ Traverse outgoing links up to depth 2 and max 20 pages within the same domain:
 
 ```sh
 $ gitcrawl crawl https://docs.kernel.org/process/ -l 2 -p 20 -s
-Starting crawl: https://docs.kernel.org/process/ (depth=2, max_pages=20, same_domain=yes)
-Fetching: https://docs.kernel.org/process/ ...
-Archived: https://docs.kernel.org/process/
+Starting crawl: https://docs.kernel.org/process/ (depth=2, max_pages=20, same_domain=true)
+[1/20] Crawling (d=0): https://docs.kernel.org/process/
 ...
 Crawl completed: 20 pages archived into archive
 ```
@@ -266,21 +269,21 @@ $ gitcrawl gc
 Benchmarks
 ----------
 
-Performance was measured on Linux x86_64 using standard C99 builds compiled with `-O2`:
+Performance measured on Linux x86_64 using standard C99 builds compiled with `-O2`:
 
 ### Micro-Benchmarks (`make bench`)
 
 | Subsystem / Operation | Iterations | Latency / Speed | Throughput |
 |---|---|---|---|
-| **DOM Sanitizer & Noise Stripper** | 50,000 | 0.92 µs / op (1,087,853 ops/sec) | **435.73 MB/s** |
-| **HTML-to-Markdown Parser Engine** | 50,000 | 1.91 µs / op (510,248 ops/sec) | **210.22 MB/s** |
-| **Fuzzy Path Ranking & Scoring** | 200,000 | 0.10 µs / query | **9,473,888 QPS** |
+| **DOM Sanitizer & Noise Stripper** | 50,000 | ~0.95 µs / op (~1,000,000 ops/sec) | **~400 MB/s** |
+| **HTML-to-Markdown Parser Engine** | 50,000 | ~2.00 µs / op (~500,000 ops/sec) | **~200 MB/s** |
+| **Fuzzy Path Ranking (`approx.h`)** | 200,000 | ~4.50 µs / query | **~220,000 QPS** |
 
-### Macro End-to-End Pipeline & Storage Efficiency
+### Macro Ingestion Pipeline & Storage Efficiency
 
 | Metric / Pipeline Stage | Performance |
 |---|---|
-| **Raw Direct Ingestion Speed** | **100+ pages/sec** direct to Git object database |
-| **Gzip Original Payload Compression** | **~75–85% size reduction** |
-| **Git Tree Delta Deduplication** | **~90–95% storage efficiency** across successive revisions |
-| **Repository Optimization (`gitcrawl gc`)** | **Sub-second packfile compaction** (100 objects in 0.05s) |
+| **In-Memory Pipe Ingestion** | **100+ pages/sec** directly to `.git/objects` via stdin plumbing |
+| **Gzip Payload Compression** | **~75–85% raw size reduction** |
+| **Git Tree Delta Compression** | **~90–95% storage efficiency** across successive revisions |
+| **Repository Optimization (`gitcrawl gc`)** | **Sub-second packfile compaction** |

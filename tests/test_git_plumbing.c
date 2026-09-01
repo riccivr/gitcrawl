@@ -15,29 +15,29 @@ int main(void) {
 	int res = git_repo_init(test_repo);
 	assert(res == 0);
 
-	char blob_sha[64] = {0};
+	char blob_sha[65] = {0};
 	const char *test_data = "# Test Document\n\nHello Gitcrawl\n";
 	res = git_write_blob(test_repo, test_data, strlen(test_data), blob_sha);
 	assert(res == 0);
-	assert(strlen(blob_sha) == 40);
+	assert(strlen(blob_sha) == 40 || strlen(blob_sha) == 64);
 
 	struct git_index_builder b;
 	git_index_builder_init(&b, test_repo, NULL);
 	res = git_index_builder_add_blob(&b, "100644", blob_sha, "archive/example.com/index.md");
 	assert(res == 0);
 
-	char tree_sha[64] = {0};
+	char tree_sha[65] = {0};
 	res = git_index_builder_write_tree(&b, tree_sha);
 	assert(res == 0);
-	assert(strlen(tree_sha) == 40);
+	assert(strlen(tree_sha) == 40 || strlen(tree_sha) == 64);
 	git_index_builder_free(&b);
 
-	char commit_sha[64] = {0};
+	char commit_sha[65] = {0};
 	res = git_create_commit(test_repo, tree_sha, NULL, "test commit", commit_sha);
 	assert(res == 0);
-	assert(strlen(commit_sha) == 40);
+	assert(strlen(commit_sha) == 40 || strlen(commit_sha) == 64);
 
-	res = git_update_ref(test_repo, "refs/heads/archive", commit_sha);
+	res = git_update_ref(test_repo, "refs/heads/archive", commit_sha, NULL);
 	assert(res == 0);
 
 	size_t read_len = 0;

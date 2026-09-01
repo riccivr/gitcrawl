@@ -70,7 +70,8 @@ strbuf_vprintf(struct strbuf *sb, const char *fmt, va_list ap)
 {
 	va_list ap_copy;
 	va_copy(ap_copy, ap);
-	int needed = vsnprintf(NULL, 0, fmt, ap_copy);
+	char dummy[1];
+	int needed = vsnprintf(dummy, 0, fmt, ap_copy);
 	va_end(ap_copy);
 
 	if (needed < 0)

@@ -1,9 +1,9 @@
 /* See LICENSE file for copyright and license details. */
+#include "sharder.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include "sharder.h"
 
 static int
 is_tracking_param(const char *key, size_t len)
@@ -96,29 +96,33 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 	const char *proto_end = strstr(p, "://");
 	if (proto_end) {
 		size_t slen = proto_end - p;
-		if (slen >= sizeof(out->scheme))
-			slen = sizeof(out->scheme) - 1;
-		for (size_t i = 0; i < slen; i++)
-			out->scheme[i] = (char)tolower((unsigned char)p[i]);
+		if (slen == 0 || slen >= sizeof(out->scheme))
+			return -1;
+		memcpy(out->scheme, p, slen);
 		out->scheme[slen] = '\0';
+		for (size_t i = 0; out->scheme[i]; i++) {
+			if (!isalnum((unsigned char)out->scheme[i]) && out->scheme[i] != '+' &&
+			    out->scheme[i] != '-' && out->scheme[i] != '.')
+				return -1;
+			out->scheme[i] = (char)tolower((unsigned char)out->scheme[i]);
+		}
 		p = proto_end + 3;
 	} else {
-		strncpy(out->scheme, "https", sizeof(out->scheme) - 1);
+		strcpy(out->scheme, "https");
 	}
 
 	const char *host_start = p;
-	const char *host_end = strpbrk(host_start, "/?#");
-	if (!host_end)
-		host_end = host_start + strlen(host_start);
+	while (*p && *p != '/' && *p != '?' && *p != '#') p++;
+	size_t hlen = p - host_start;
+	if (hlen == 0 || hlen >= sizeof(out->host))
+		return -1;
 
-	char host_buf[256] = {0};
-	size_t hlen = host_end - host_start;
-	if (hlen >= sizeof(host_buf))
-		hlen = sizeof(host_buf) - 1;
-	memcpy(host_buf, host_start, hlen);
-	host_buf[hlen] = '\0';
+	memcpy(out->host, host_start, hlen);
+	out->host[hlen] = '\0';
+	for (size_t i = 0; out->host[i]; i++)
+		out->host[i] = (char)tolower((unsigned char)out->host[i]);
 
-	char *colon = strchr(host_buf, ':');
+	char *colon = strchr(out->host, ':');
 	if (colon) {
 		*colon = '\0';
 		out->port = atoi(colon + 1);
@@ -126,51 +130,46 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 		out->port = (strcmp(out->scheme, "http") == 0) ? 80 : 443;
 	}
 
-	for (size_t i = 0; host_buf[i]; i++)
-		out->host[i] = (char)tolower((unsigned char)host_buf[i]);
-
-	if (strlen(out->scheme) == 0 || strlen(out->host) == 0)
-		return -1;
-
-	p = host_end;
-	const char *query_start = strchr(p, '?');
-	const char *frag_start = strchr(p, '#');
-
-	size_t path_len;
-	if (query_start) {
-		path_len = query_start - p;
-	} else if (frag_start) {
-		path_len = frag_start - p;
-	} else {
-		path_len = strlen(p);
-	}
-
-	if (path_len == 0 || (path_len == 1 && *p != '/')) {
+	const char *path_start = p;
+	while (*p && *p != '?' && *p != '#') p++;
+	size_t plen = p - path_start;
+	if (plen == 0) {
 		strcpy(out->path, "/");
 	} else {
-		if (path_len >= sizeof(out->path))
-			path_len = sizeof(out->path) - 1;
-		memcpy(out->path, p, path_len);
-		out->path[path_len] = '\0';
+		if (plen >= sizeof(out->path))
+			plen = sizeof(out->path) - 1;
+		memcpy(out->path, path_start, plen);
+		out->path[plen] = '\0';
 	}
 
-	if (query_start) {
-		const char *q_end = frag_start ? frag_start : query_start + strlen(query_start);
-		char raw_q[2048] = {0};
-		size_t qlen = q_end - (query_start + 1);
-		if (qlen >= sizeof(raw_q))
-			qlen = sizeof(raw_q) - 1;
-		memcpy(raw_q, query_start + 1, qlen);
-		raw_q[qlen] = '\0';
-		normalize_query(raw_q, out->query, sizeof(out->query));
+	if (*p == '?') {
+		p++;
+		const char *q_start = p;
+		while (*p && *p != '#') p++;
+		size_t qlen = p - q_start;
+		char raw_q[1024] = {0};
+		if (qlen < sizeof(raw_q)) {
+			memcpy(raw_q, q_start, qlen);
+			normalize_query(raw_q, out->query, sizeof(out->query));
+		}
 	}
 
 	if (out->query[0]) {
-		snprintf(out->normalized_url, sizeof(out->normalized_url), "%s://%s%s?%s",
-		         out->scheme, out->host, out->path, out->query);
+		if (out->port == 80 || out->port == 443) {
+			snprintf(out->normalized_url, sizeof(out->normalized_url),
+			         "%s://%s%s?%s", out->scheme, out->host, out->path, out->query);
+		} else {
+			snprintf(out->normalized_url, sizeof(out->normalized_url),
+			         "%s://%s:%d%s?%s", out->scheme, out->host, out->port, out->path, out->query);
+		}
 	} else {
-		snprintf(out->normalized_url, sizeof(out->normalized_url), "%s://%s%s",
-		         out->scheme, out->host, out->path);
+		if (out->port == 80 || out->port == 443) {
+			snprintf(out->normalized_url, sizeof(out->normalized_url),
+			         "%s://%s%s", out->scheme, out->host, out->path);
+		} else {
+			snprintf(out->normalized_url, sizeof(out->normalized_url),
+			         "%s://%s:%d%s", out->scheme, out->host, out->port, out->path);
+		}
 	}
 
 	return 0;
@@ -191,9 +190,9 @@ generate_shard_paths(const struct parsed_url *url, struct shard_paths *out)
 	sanitize_path_segment(p, safe_seg, sizeof(safe_seg));
 
 	size_t slen = strlen(safe_seg);
-	if (slen > 5 && strcmp(safe_seg + slen - 5, ".html") == 0) {
+	if (slen >= 5 && strcmp(safe_seg + slen - 5, ".html") == 0) {
 		safe_seg[slen - 5] = '\0';
-	} else if (slen > 4 && strcmp(safe_seg + slen - 4, ".htm") == 0) {
+	} else if (slen >= 4 && strcmp(safe_seg + slen - 4, ".htm") == 0) {
 		safe_seg[slen - 4] = '\0';
 	}
 
@@ -229,6 +228,50 @@ generate_shard_paths(const struct parsed_url *url, struct shard_paths *out)
 	return 0;
 }
 
+static void
+normalize_relative_path(const char *in, char *out, size_t cap)
+{
+	if (!in || !*in) {
+		snprintf(out, cap, "/");
+		return;
+	}
+
+	char *segments[128];
+	int count = 0;
+	char *dup = strdup(in);
+	if (!dup) {
+		snprintf(out, cap, "%s", in);
+		return;
+	}
+
+	char *token = strtok(dup, "/");
+	while (token) {
+		if (strcmp(token, ".") == 0) {
+			/* skip */
+		} else if (strcmp(token, "..") == 0) {
+			if (count > 0)
+				count--;
+		} else if (*token) {
+			if (count < 128)
+				segments[count++] = token;
+		}
+		token = strtok(NULL, "/");
+	}
+
+	size_t pos = 0;
+	if (pos < cap) out[pos++] = '/';
+	for (int i = 0; i < count; i++) {
+		size_t slen = strlen(segments[i]);
+		if (pos + slen + 2 < cap) {
+			if (i > 0) out[pos++] = '/';
+			memcpy(out + pos, segments[i], slen);
+			pos += slen;
+		}
+	}
+	out[pos] = '\0';
+	free(dup);
+}
+
 int
 resolve_url(const char *base_url, const char *relative_url, char *out_url, size_t out_cap)
 {
@@ -253,10 +296,13 @@ resolve_url(const char *base_url, const char *relative_url, char *out_url, size_
 		return -1;
 
 	if (relative_url[0] == '/') {
-		snprintf(out_url, out_cap, "%s://%s%s", base.scheme, base.host, relative_url);
+		char norm_path[2048] = {0};
+		normalize_relative_path(relative_url, norm_path, sizeof(norm_path));
+		snprintf(out_url, out_cap, "%s://%s%s", base.scheme, base.host, norm_path);
 		return 0;
 	}
 
+	char raw_combined[4096] = {0};
 	char base_dir[2048] = {0};
 	snprintf(base_dir, sizeof(base_dir), "%s", base.path);
 	char *last_slash = strrchr(base_dir, '/');
@@ -266,6 +312,10 @@ resolve_url(const char *base_url, const char *relative_url, char *out_url, size_
 		strcpy(base_dir, "/");
 	}
 
-	snprintf(out_url, out_cap, "%s://%s%s%s", base.scheme, base.host, base_dir, relative_url);
+	snprintf(raw_combined, sizeof(raw_combined), "%s%s", base_dir, relative_url);
+	char norm_path[2048] = {0};
+	normalize_relative_path(raw_combined, norm_path, sizeof(norm_path));
+
+	snprintf(out_url, out_cap, "%s://%s%s", base.scheme, base.host, norm_path);
 	return 0;
 }

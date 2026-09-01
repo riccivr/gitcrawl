@@ -1,9 +1,9 @@
 /* See LICENSE file for copyright and license details. */
+#include "gitcrawl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "gitcrawl.h"
 
 char *argv0;
 
@@ -29,7 +29,7 @@ usage(int status)
 		"  -m message             Commit message\n"
 		"  -l depth               Recursion depth for crawl (default: 1)\n"
 		"  -p max_pages           Max pages to crawl (default: 50)\n"
-		"  -s                     Same domain only during crawl\n"
+		"  -s                     Same domain only during crawl (default: off)\n"
 		"  -f format              Output format for show (md, html, json)\n"
 		"  -i                     Read content from stdin for the specified URL\n"
 		"  -z                     Fuzzy search mode\n"
@@ -46,17 +46,19 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 	char ref_name[256];
 	snprintf(ref_name, sizeof(ref_name), "refs/heads/%s", branch ? branch : "archive");
 
-	char md_sha[64] = {0};
-	char gz_sha[64] = {0};
-	char json_sha[64] = {0};
+	char md_sha[65] = {0};
+	char gz_sha[65] = {0};
+	char json_sha[65] = {0};
 
 	if (git_write_blob(repo_dir, page->markdown, page->md_len, md_sha) < 0) {
 		fprintf(stderr, "Error: Failed to write markdown blob\n");
 		return -1;
 	}
-	if (git_write_blob(repo_dir, page->html_gz, page->gz_len, gz_sha) < 0) {
-		fprintf(stderr, "Error: Failed to write gzip blob\n");
-		return -1;
+	if (page->html_gz && page->gz_len > 0) {
+		if (git_write_blob(repo_dir, page->html_gz, page->gz_len, gz_sha) < 0) {
+			fprintf(stderr, "Error: Failed to write gzip blob\n");
+			return -1;
+		}
 	}
 	if (git_write_blob(repo_dir, page->metadata_json, page->json_len, json_sha) < 0) {
 		fprintf(stderr, "Error: Failed to write metadata blob\n");
@@ -66,10 +68,12 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 	struct git_index_builder b;
 	git_index_builder_init(&b, repo_dir, ref_name);
 	git_index_builder_add_blob(&b, "100644", md_sha, page->paths.md_path);
-	git_index_builder_add_blob(&b, "100644", gz_sha, page->paths.gz_path);
+	if (gz_sha[0]) {
+		git_index_builder_add_blob(&b, "100644", gz_sha, page->paths.gz_path);
+	}
 	git_index_builder_add_blob(&b, "100644", json_sha, page->paths.json_path);
 
-	char tree_sha[64] = {0};
+	char tree_sha[65] = {0};
 	if (git_index_builder_write_tree(&b, tree_sha) < 0) {
 		fprintf(stderr, "Error: Failed to write git tree\n");
 		git_index_builder_free(&b);
@@ -77,7 +81,7 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 	}
 	git_index_builder_free(&b);
 
-	char parent_sha[64] = {0};
+	char parent_sha[65] = {0};
 	git_get_ref_commit(repo_dir, ref_name, parent_sha);
 
 	char default_msg[9000];
@@ -87,14 +91,14 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 		commit_msg = default_msg;
 	}
 
-	char commit_sha[64] = {0};
+	char commit_sha[65] = {0};
 	if (git_create_commit(repo_dir, tree_sha, parent_sha[0] ? parent_sha : NULL,
 	                      commit_msg, commit_sha) < 0) {
 		fprintf(stderr, "Error: Failed to create git commit\n");
 		return -1;
 	}
 
-	if (git_update_ref(repo_dir, ref_name, commit_sha) < 0) {
+	if (git_update_ref(repo_dir, ref_name, commit_sha, parent_sha[0] ? parent_sha : NULL) < 0) {
 		fprintf(stderr, "Error: Failed to update ref %s\n", ref_name);
 		return -1;
 	}
@@ -147,13 +151,18 @@ cmd_archive(int argc, char **argv, const char *repo_dir, const char *branch, con
 	return ret == 0 ? 0 : 1;
 }
 
+struct crawl_queue_item {
+	char *url;
+	int depth;
+};
+
 static int
 cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 {
 	const char *start_url = NULL;
 	int depth = 1;
 	int max_pages = 50;
-	int same_domain = 1;
+	int same_domain = 0;
 
 	ARGBEGIN {
 	case 'b': branch = EARGF(usage(1)); break;
@@ -174,47 +183,64 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 		return 1;
 	}
 
-	char visited[512][8192];
-	int visited_count = 0;
+	/* Dynamically allocated queue and visited set */
+	size_t q_cap = 64;
+	struct crawl_queue_item *queue = malloc(q_cap * sizeof(struct crawl_queue_item));
+	if (!queue) return 1;
 
-	char queue[512][8192];
-	int q_depth[512];
-	int q_head = 0;
-	int q_tail = 0;
+	size_t q_head = 0;
+	size_t q_tail = 0;
 
-	strncpy(queue[q_tail], base_parsed.normalized_url, sizeof(queue[0]) - 1);
-	queue[q_tail][sizeof(queue[0]) - 1] = '\0';
-	q_depth[q_tail] = 0;
+	queue[q_tail].url = strdup(base_parsed.normalized_url);
+	queue[q_tail].depth = 0;
 	q_tail++;
+
+	size_t visited_cap = 64;
+	char **visited = malloc(visited_cap * sizeof(char *));
+	if (!visited) {
+		free(queue[0].url);
+		free(queue);
+		return 1;
+	}
+	size_t visited_count = 0;
 
 	printf("Starting crawl: %s (depth=%d, max_pages=%d, same_domain=%s)\n",
 	       base_parsed.normalized_url, depth, max_pages, same_domain ? "true" : "false");
 
-	while (q_head < q_tail && visited_count < max_pages) {
-		char current_url[8192];
-		strncpy(current_url, queue[q_head], sizeof(current_url) - 1);
-		current_url[sizeof(current_url) - 1] = '\0';
-		int cur_d = q_depth[q_head];
+	while (q_head < q_tail && (int)visited_count < max_pages) {
+		char *current_url = queue[q_head].url;
+		int cur_d = queue[q_head].depth;
 		q_head++;
 
 		int already_visited = 0;
-		for (int i = 0; i < visited_count; i++) {
+		for (size_t i = 0; i < visited_count; i++) {
 			if (strcmp(visited[i], current_url) == 0) {
 				already_visited = 1;
 				break;
 			}
 		}
-		if (already_visited) continue;
+		if (already_visited) {
+			free(current_url);
+			continue;
+		}
 
-		strncpy(visited[visited_count++], current_url, sizeof(visited[0]) - 1);
+		if (visited_count >= visited_cap) {
+			size_t ncap = visited_cap * 2;
+			char **nvisited = realloc(visited, ncap * sizeof(char *));
+			if (nvisited) {
+				visited = nvisited;
+				visited_cap = ncap;
+			}
+		}
+		visited[visited_count++] = strdup(current_url);
 
 		struct crawl_page_data page;
-		printf("[%d/%d] Crawling (d=%d): %s\n", visited_count, max_pages, cur_d, current_url);
+		printf("[%lu/%d] Crawling (d=%d): %s\n", (unsigned long)visited_count, max_pages, cur_d, current_url);
 		if (fetch_url_data(current_url, &page) == 0) {
 			archive_single_page(repo_dir, branch, NULL, &page);
 
 			if (cur_d < depth) {
-				for (int k = 0; k < page.links.count && q_tail < 512; k++) {
+				for (size_t k = 0; k < page.links.count && (int)q_tail < max_pages * 4; k++) {
 					const char *link = page.links.urls[k];
 					struct parsed_url link_parsed;
 					if (parse_and_normalize_url(link, &link_parsed) == 0) {
@@ -222,30 +248,53 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 							continue;
 
 						int queued_or_visited = 0;
-						for (int v = 0; v < visited_count; v++) {
+						for (size_t v = 0; v < visited_count; v++) {
 							if (strcmp(visited[v], link_parsed.normalized_url) == 0) {
 								queued_or_visited = 1; break;
 							}
 						}
-						for (int q = q_head; q < q_tail; q++) {
-							if (strcmp(queue[q], link_parsed.normalized_url) == 0) {
-								queued_or_visited = 1; break;
+						if (!queued_or_visited) {
+							for (size_t q = q_head; q < q_tail; q++) {
+								if (strcmp(queue[q].url, link_parsed.normalized_url) == 0) {
+									queued_or_visited = 1; break;
+								}
 							}
 						}
 						if (!queued_or_visited) {
-							strncpy(queue[q_tail], link_parsed.normalized_url, sizeof(queue[0]) - 1);
-							queue[q_tail][sizeof(queue[0]) - 1] = '\0';
-							q_depth[q_tail] = cur_d + 1;
-							q_tail++;
+							if (q_tail >= q_cap) {
+								size_t ncap = q_cap * 2;
+								struct crawl_queue_item *nq = realloc(queue, ncap * sizeof(struct crawl_queue_item));
+								if (nq) {
+									queue = nq;
+									q_cap = ncap;
+								}
+							}
+							if (q_tail < q_cap) {
+								queue[q_tail].url = strdup(link_parsed.normalized_url);
+								queue[q_tail].depth = cur_d + 1;
+								q_tail++;
+							}
 						}
 					}
 				}
 			}
 			crawl_page_data_free(&page);
 		}
+		free(current_url);
 	}
 
-	printf("Crawl completed: %d pages archived into %s\n", visited_count, branch ? branch : "archive");
+	/* Cleanup remaining queued items */
+	for (size_t q = q_head; q < q_tail; q++) {
+		free(queue[q].url);
+	}
+	free(queue);
+
+	for (size_t v = 0; v < visited_count; v++) {
+		free(visited[v]);
+	}
+	free(visited);
+
+	printf("Crawl completed: %lu pages archived into %s\n", (unsigned long)visited_count, branch ? branch : "archive");
 	return 0;
 }
 

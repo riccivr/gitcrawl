@@ -34,6 +34,13 @@ SEARCH_RES=$(./gitcrawl search -d "$TEST_REPO" -z "rapid-snapshots")
 echo "$SEARCH_RES" | grep -q "example.com/rapid-snapshots"
 echo "  [stress] Fuzzy index search verified under high commit volume."
 
+# Restricted stack memory safety test
+(
+    ulimit -s 1024 2>/dev/null || true
+    echo "<h1>Restricted Stack Test</h1>" | ./gitcrawl archive -d "$TEST_REPO" -i https://example.com/restricted-stack >/dev/null
+)
+echo "  [stress] Restricted stack execution verified."
+
 ./gitcrawl gc -d "$TEST_REPO"
 echo "  [stress] Repository compaction & GC verified."
 

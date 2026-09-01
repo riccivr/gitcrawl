@@ -7,7 +7,7 @@
 struct git_tree_entry {
 	char mode[16];
 	char type[16];
-	char sha[64];
+	char sha[65];
 	char path[1024];
 };
 
@@ -25,8 +25,8 @@ int git_write_blob(const char *repo_dir, const void *data, size_t len, char *out
 int git_read_tree(const char *repo_dir, const char *ref, struct git_tree *out_tree);
 int git_get_ref_commit(const char *repo_dir, const char *ref_name, char *out_commit_sha);
 int git_create_commit(const char *repo_dir, const char *tree_sha, const char *parent_sha,
-                     const char *msg, char *out_commit_sha);
-int git_update_ref(const char *repo_dir, const char *ref_name, const char *commit_sha);
+                      const char *msg, char *out_commit_sha);
+int git_update_ref(const char *repo_dir, const char *ref_name, const char *commit_sha, const char *old_commit_sha);
 int git_show_diff(const char *repo_dir, const char *ref1, const char *ref2, const char *path);
 int git_show_log(const char *repo_dir, const char *ref, const char *path, int limit);
 char *git_read_file_at_ref(const char *repo_dir, const char *ref, const char *path, size_t *out_len);

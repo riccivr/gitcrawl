@@ -1,11 +1,12 @@
 /* See LICENSE file for copyright and license details. */
+#include "git_plumbing.h"
+#include "process_utils.h"
+#include "strbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include "git_plumbing.h"
-#include "strbuf.h"
 
 void
 git_tree_init(struct git_tree *tree)
@@ -36,62 +37,57 @@ git_repo_init(const char *repo_dir)
 	if (stat(git_path, &st) == 0)
 		return 0;
 
-	char cmd[4096];
-	snprintf(cmd, sizeof(cmd),
-	         "mkdir -p \"%s\" && git -C \"%s\" init --quiet && "
-	         "git -C \"%s\" config user.name \"gitcrawl\" 2>/dev/null || true; "
-	         "git -C \"%s\" config user.email \"gitcrawl@localhost\" 2>/dev/null || true",
-	         dir, dir, dir, dir);
-	return system(cmd) == 0 ? 0 : -1;
+#if !defined(_WIN32)
+	mkdir(dir, 0755);
+#else
+	mkdir(dir);
+#endif
+
+	const char *init_argv[] = {"git", "-C", dir, "init", "--quiet", NULL};
+	if (run_cmd_argv(init_argv, NULL, 0, NULL, NULL, NULL) != 0)
+		return -1;
+
+	/* Set local fallback identity only if not configured */
+	const char *check_name[] = {"git", "-C", dir, "config", "user.name", NULL};
+	struct strbuf out, err;
+	strbuf_init(&out, 64);
+	strbuf_init(&err, 64);
+	if (run_cmd_argv(check_name, NULL, 0, &out, &err, NULL) != 0 || out.len == 0) {
+		const char *set_name[] = {"git", "-C", dir, "config", "user.name", "gitcrawl", NULL};
+		const char *set_email[] = {"git", "-C", dir, "config", "user.email", "gitcrawl@localhost", NULL};
+		run_cmd_argv(set_name, NULL, 0, NULL, &err, NULL);
+		run_cmd_argv(set_email, NULL, 0, NULL, &err, NULL);
+	}
+	strbuf_free(&out);
+	strbuf_free(&err);
+
+	return 0;
 }
 
 int
 git_write_blob(const char *repo_dir, const void *data, size_t len, char *out_sha)
 {
-	static int seq = 0;
-	char tmp_path[512];
-#if defined(_WIN32)
-	const char *tmp_dir = getenv("TEMP");
-	if (!tmp_dir) tmp_dir = getenv("TMP");
-	if (!tmp_dir) tmp_dir = ".";
-	snprintf(tmp_path, sizeof(tmp_path), "%s/gitcrawl_blob_%d_%d.tmp", tmp_dir, (int)getpid(), seq++);
-#else
-	snprintf(tmp_path, sizeof(tmp_path), "/tmp/gitcrawl_blob_%d_%d.tmp", (int)getpid(), seq++);
-#endif
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *argv[] = {"git", "-C", dir, "hash-object", "-w", "--stdin", NULL};
+	struct strbuf out;
+	strbuf_init(&out, 128);
 
-	FILE *f = fopen(tmp_path, "wb");
-	if (!f) return -1;
-	if (len > 0 && fwrite(data, 1, len, f) != len) {
-		fclose(f);
-		unlink(tmp_path);
-		return -1;
-	}
-	fclose(f);
-
-	char cmd[1024];
-	snprintf(cmd, sizeof(cmd), "git -C \"%s\" hash-object -w \"%s\" 2>/dev/null",
-	         (repo_dir && *repo_dir) ? repo_dir : ".", tmp_path);
-
-	FILE *fp = popen(cmd, "r");
-	if (!fp) {
-		unlink(tmp_path);
+	int res = run_cmd_argv(argv, data, len, &out, NULL, NULL);
+	if (res != 0) {
+		strbuf_free(&out);
 		return -1;
 	}
 
-	char buf[128] = {0};
-	char *res = fgets(buf, sizeof(buf), fp);
-	int status = pclose(fp);
-	unlink(tmp_path);
+	while (out.len > 0 && (out.buf[out.len - 1] == '\n' || out.buf[out.len - 1] == '\r' || out.buf[out.len - 1] == ' '))
+		out.buf[--out.len] = '\0';
 
-	if (status == 0 && res) {
-		size_t rlen = strlen(buf);
-		while (rlen > 0 && (buf[rlen-1] == '\n' || buf[rlen-1] == '\r'))
-			buf[--rlen] = '\0';
-		if (rlen == 40) {
-			snprintf(out_sha, 64, "%s", buf);
-			return 0;
-		}
+	if (out.len == 40 || out.len == 64) {
+		snprintf(out_sha, 65, "%s", out.buf);
+		strbuf_free(&out);
+		return 0;
 	}
+
+	strbuf_free(&out);
 	return -1;
 }
 
@@ -113,13 +109,13 @@ git_index_builder_init(struct git_index_builder *b, const char *repo_dir, const 
 	unlink(b->index_file);
 
 	if (base_ref && *base_ref) {
-		char commit[64] = {0};
+		char commit[65] = {0};
 		if (git_get_ref_commit(dir, base_ref, commit) == 0) {
-			char cmd[4096];
-			snprintf(cmd, sizeof(cmd), "GIT_INDEX_FILE=\"%s\" git -C \"%s\" read-tree \"%s\" 2>/dev/null",
-			         b->index_file, dir, commit);
-			int res = system(cmd);
-			(void)res;
+			char env_idx[2048];
+			snprintf(env_idx, sizeof(env_idx), "GIT_INDEX_FILE=%s", b->index_file);
+			const char *env[] = {env_idx, NULL};
+			const char *argv[] = {"git", "-C", dir, "read-tree", commit, NULL};
+			run_cmd_argv(argv, NULL, 0, NULL, NULL, env);
 		}
 	}
 	return 0;
@@ -128,36 +124,41 @@ git_index_builder_init(struct git_index_builder *b, const char *repo_dir, const 
 int
 git_index_builder_add_blob(struct git_index_builder *b, const char *mode, const char *blob_sha, const char *path)
 {
-	char cmd[4096];
-	snprintf(cmd, sizeof(cmd),
-	         "GIT_INDEX_FILE=\"%s\" git -C \"%s\" update-index --add --cacheinfo %s %s \"%s\"",
-	         b->index_file, b->repo_dir, mode ? mode : "100644", blob_sha, path);
-	return system(cmd) == 0 ? 0 : -1;
+	char env_idx[2048];
+	snprintf(env_idx, sizeof(env_idx), "GIT_INDEX_FILE=%s", b->index_file);
+	const char *env[] = {env_idx, NULL};
+	const char *argv[] = {
+		"git", "-C", b->repo_dir, "update-index", "--add", "--cacheinfo",
+		mode ? mode : "100644", blob_sha, path, NULL
+	};
+	return run_cmd_argv(argv, NULL, 0, NULL, NULL, env) == 0 ? 0 : -1;
 }
 
 int
 git_index_builder_write_tree(struct git_index_builder *b, char *out_tree_sha)
 {
-	char cmd[4096];
-	snprintf(cmd, sizeof(cmd), "GIT_INDEX_FILE=\"%s\" git -C \"%s\" write-tree 2>/dev/null",
-	         b->index_file, b->repo_dir);
+	char env_idx[2048];
+	snprintf(env_idx, sizeof(env_idx), "GIT_INDEX_FILE=%s", b->index_file);
+	const char *env[] = {env_idx, NULL};
+	const char *argv[] = {"git", "-C", b->repo_dir, "write-tree", NULL};
 
-	FILE *fp = popen(cmd, "r");
-	if (!fp) return -1;
-
-	char buf[128] = {0};
-	char *res = fgets(buf, sizeof(buf), fp);
-	int status = pclose(fp);
-
-	if (status == 0 && res) {
-		size_t len = strlen(buf);
-		while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
-			buf[--len] = '\0';
-		if (strlen(buf) == 40) {
-			snprintf(out_tree_sha, 64, "%s", buf);
-			return 0;
-		}
+	struct strbuf out;
+	strbuf_init(&out, 128);
+	if (run_cmd_argv(argv, NULL, 0, &out, NULL, env) != 0) {
+		strbuf_free(&out);
+		return -1;
 	}
+
+	while (out.len > 0 && (out.buf[out.len - 1] == '\n' || out.buf[out.len - 1] == '\r' || out.buf[out.len - 1] == ' '))
+		out.buf[--out.len] = '\0';
+
+	if (out.len == 40 || out.len == 64) {
+		snprintf(out_tree_sha, 65, "%s", out.buf);
+		strbuf_free(&out);
+		return 0;
+	}
+
+	strbuf_free(&out);
 	return -1;
 }
 
@@ -174,188 +175,233 @@ int
 git_read_tree(const char *repo_dir, const char *ref, struct git_tree *out_tree)
 {
 	git_tree_init(out_tree);
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *target_ref = (ref && *ref) ? ref : "HEAD";
+	const char *argv[] = {"git", "-C", dir, "ls-tree", "-r", "--full-tree", target_ref, NULL};
 
-	char cmd[2048];
-	snprintf(cmd, sizeof(cmd), "git -C \"%s\" ls-tree -r --full-tree \"%s\" 2>/dev/null",
-	         repo_dir ? repo_dir : ".", ref);
-
-	FILE *fp = popen(cmd, "r");
-	if (!fp)
+	struct strbuf out;
+	strbuf_init(&out, 16384);
+	if (run_cmd_argv(argv, NULL, 0, &out, NULL, NULL) != 0) {
+		strbuf_free(&out);
 		return -1;
-
-	char line[2048];
-	while (fgets(line, sizeof(line), fp)) {
-		char mode[16] = {0};
-		char type[16] = {0};
-		char sha[64] = {0};
-		char path[1024] = {0};
-
-		char *tab = strchr(line, '\t');
-		if (!tab) continue;
-		*tab = '\0';
-		snprintf(path, sizeof(path), "%s", tab + 1);
-		size_t plen = strlen(path);
-		while (plen > 0 && (path[plen-1] == '\n' || path[plen-1] == '\r'))
-			path[--plen] = '\0';
-
-		if (sscanf(line, "%15s %15s %63s", mode, type, sha) == 3) {
-			if (out_tree->count >= out_tree->cap) {
-				size_t ncap = out_tree->cap == 0 ? 32 : out_tree->cap * 2;
-				struct git_tree_entry *nentries = realloc(out_tree->entries, ncap * sizeof(struct git_tree_entry));
-				if (!nentries) break;
-				out_tree->entries = nentries;
-				out_tree->cap = ncap;
-			}
-			struct git_tree_entry *e = &out_tree->entries[out_tree->count++];
-			snprintf(e->mode, sizeof(e->mode), "%s", mode);
-			snprintf(e->type, sizeof(e->type), "%s", type);
-			snprintf(e->sha, sizeof(e->sha), "%s", sha);
-			snprintf(e->path, sizeof(e->path), "%s", path);
-		}
 	}
-	pclose(fp);
+
+	char *p = out.buf;
+	while (*p) {
+		char *next_line = strchr(p, '\n');
+		if (next_line) *next_line = '\0';
+
+		char *tab = strchr(p, '\t');
+		if (tab) {
+			*tab = '\0';
+			const char *path = tab + 1;
+			char mode[16] = {0}, type[16] = {0}, sha[65] = {0};
+			if (sscanf(p, "%15s %15s %64s", mode, type, sha) == 3) {
+				if (out_tree->count >= out_tree->cap) {
+					size_t ncap = out_tree->cap == 0 ? 32 : out_tree->cap * 2;
+					struct git_tree_entry *nentries = realloc(out_tree->entries, ncap * sizeof(struct git_tree_entry));
+					if (!nentries) break;
+					out_tree->entries = nentries;
+					out_tree->cap = ncap;
+				}
+				struct git_tree_entry *e = &out_tree->entries[out_tree->count++];
+				snprintf(e->mode, sizeof(e->mode), "%s", mode);
+				snprintf(e->type, sizeof(e->type), "%s", type);
+				snprintf(e->sha, sizeof(e->sha), "%s", sha);
+				snprintf(e->path, sizeof(e->path), "%s", path);
+			}
+		}
+		if (!next_line) break;
+		p = next_line + 1;
+	}
+
+	strbuf_free(&out);
 	return 0;
 }
 
 int
 git_get_ref_commit(const char *repo_dir, const char *ref_name, char *out_commit_sha)
 {
-	char cmd[2048];
-	snprintf(cmd, sizeof(cmd), "git -C \"%s\" rev-parse --verify \"%s\" 2>/dev/null",
-	         repo_dir ? repo_dir : ".", ref_name);
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *argv[] = {"git", "-C", dir, "rev-parse", "--verify", "--quiet", ref_name, NULL};
 
-	FILE *fp = popen(cmd, "r");
-	if (!fp)
+	struct strbuf out, err;
+	strbuf_init(&out, 128);
+	strbuf_init(&err, 128);
+	if (run_cmd_argv(argv, NULL, 0, &out, &err, NULL) != 0) {
+		strbuf_free(&out);
+		strbuf_free(&err);
 		return -1;
-
-	char buf[128] = {0};
-	char *res = fgets(buf, sizeof(buf), fp);
-	int status = pclose(fp);
-
-	if (status == 0 && res) {
-		size_t len = strlen(buf);
-		while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
-			buf[--len] = '\0';
-		if (strlen(buf) == 40) {
-			snprintf(out_commit_sha, 64, "%s", buf);
-			return 0;
-		}
 	}
+	strbuf_free(&err);
+
+	while (out.len > 0 && (out.buf[out.len - 1] == '\n' || out.buf[out.len - 1] == '\r' || out.buf[out.len - 1] == ' '))
+		out.buf[--out.len] = '\0';
+
+	if (out.len == 40 || out.len == 64) {
+		snprintf(out_commit_sha, 65, "%s", out.buf);
+		strbuf_free(&out);
+		return 0;
+	}
+
+	strbuf_free(&out);
 	return -1;
 }
 
 int
 git_create_commit(const char *repo_dir, const char *tree_sha, const char *parent_sha,
-                 const char *msg, char *out_commit_sha)
+                  const char *msg, char *out_commit_sha)
 {
-	char cmd[4096];
-	const char *env_prefix = "GIT_AUTHOR_NAME=\"gitcrawl\" GIT_AUTHOR_EMAIL=\"gitcrawl@localhost\" "
-	                         "GIT_COMMITTER_NAME=\"gitcrawl\" GIT_COMMITTER_EMAIL=\"gitcrawl@localhost\"";
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *commit_msg = (msg && *msg) ? msg : "webcrawl snapshot";
+	const char *env[] = {
+		"GIT_AUTHOR_NAME=gitcrawl",
+		"GIT_AUTHOR_EMAIL=gitcrawl@localhost",
+		"GIT_COMMITTER_NAME=gitcrawl",
+		"GIT_COMMITTER_EMAIL=gitcrawl@localhost",
+		NULL
+	};
+
+	const char *argv[10];
+	int argc = 0;
+	argv[argc++] = "git";
+	argv[argc++] = "-C";
+	argv[argc++] = dir;
+	argv[argc++] = "commit-tree";
+	argv[argc++] = tree_sha;
 	if (parent_sha && *parent_sha) {
-		snprintf(cmd, sizeof(cmd), "%s git -C \"%s\" commit-tree \"%s\" -p \"%s\" -m \"%s\" 2>/dev/null",
-		         env_prefix, repo_dir ? repo_dir : ".", tree_sha, parent_sha, msg ? msg : "webcrawl snapshot");
-	} else {
-		snprintf(cmd, sizeof(cmd), "%s git -C \"%s\" commit-tree \"%s\" -m \"%s\" 2>/dev/null",
-		         env_prefix, repo_dir ? repo_dir : ".", tree_sha, msg ? msg : "initial webcrawl snapshot");
+		argv[argc++] = "-p";
+		argv[argc++] = parent_sha;
 	}
+	argv[argc++] = "-m";
+	argv[argc++] = commit_msg;
+	argv[argc] = NULL;
 
-	FILE *fp = popen(cmd, "r");
-	if (!fp)
+	struct strbuf out;
+	strbuf_init(&out, 128);
+
+	int res = run_cmd_argv(argv, NULL, 0, &out, NULL, env);
+	if (res != 0) {
+		strbuf_free(&out);
 		return -1;
-
-	char buf[128] = {0};
-	char *res = fgets(buf, sizeof(buf), fp);
-	int status = pclose(fp);
-
-	if (status == 0 && res) {
-		size_t len = strlen(buf);
-		while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
-			buf[--len] = '\0';
-		if (strlen(buf) == 40) {
-			snprintf(out_commit_sha, 64, "%s", buf);
-			return 0;
-		}
 	}
+
+	while (out.len > 0 && (out.buf[out.len - 1] == '\n' || out.buf[out.len - 1] == '\r' || out.buf[out.len - 1] == ' '))
+		out.buf[--out.len] = '\0';
+
+	if (out.len == 40 || out.len == 64) {
+		snprintf(out_commit_sha, 65, "%s", out.buf);
+		strbuf_free(&out);
+		return 0;
+	}
+
+	strbuf_free(&out);
 	return -1;
 }
 
 int
-git_update_ref(const char *repo_dir, const char *ref_name, const char *commit_sha)
+git_update_ref(const char *repo_dir, const char *ref_name, const char *commit_sha, const char *old_commit_sha)
 {
-	char cmd[2048];
-	snprintf(cmd, sizeof(cmd), "git -C \"%s\" update-ref \"%s\" \"%s\"",
-	         repo_dir ? repo_dir : ".", ref_name, commit_sha);
-	return system(cmd) == 0 ? 0 : -1;
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *argv[8];
+	int argc = 0;
+	argv[argc++] = "git";
+	argv[argc++] = "-C";
+	argv[argc++] = dir;
+	argv[argc++] = "update-ref";
+	argv[argc++] = ref_name;
+	argv[argc++] = commit_sha;
+	if (old_commit_sha && *old_commit_sha) {
+		argv[argc++] = old_commit_sha;
+	}
+	argv[argc] = NULL;
+
+	return run_cmd_argv(argv, NULL, 0, NULL, NULL, NULL);
 }
 
 int
 git_show_diff(const char *repo_dir, const char *ref1, const char *ref2, const char *path)
 {
-	char cmd[4096];
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *argv[10];
+	int argc = 0;
+	argv[argc++] = "git";
+	argv[argc++] = "-C";
+	argv[argc++] = dir;
+	argv[argc++] = "diff";
+	argv[argc++] = "--color=auto";
+
+	char ref_parent[128];
 	if (ref1 && ref2) {
-		if (path && *path) {
-			snprintf(cmd, sizeof(cmd), "git -C \"%s\" diff --color=auto \"%s\" \"%s\" -- \"%s\"",
-			         repo_dir ? repo_dir : ".", ref1, ref2, path);
-		} else {
-			snprintf(cmd, sizeof(cmd), "git -C \"%s\" diff --color=auto \"%s\" \"%s\"",
-			         repo_dir ? repo_dir : ".", ref1, ref2);
-		}
+		argv[argc++] = ref1;
+		argv[argc++] = ref2;
 	} else if (ref1) {
-		if (path && *path) {
-			snprintf(cmd, sizeof(cmd), "git -C \"%s\" diff --color=auto \"%s\"~1 \"%s\" -- \"%s\"",
-			         repo_dir ? repo_dir : ".", ref1, ref1, path);
-		} else {
-			snprintf(cmd, sizeof(cmd), "git -C \"%s\" diff --color=auto \"%s\"~1 \"%s\"",
-			         repo_dir ? repo_dir : ".", ref1, ref1);
-		}
+		snprintf(ref_parent, sizeof(ref_parent), "%s~1", ref1);
+		argv[argc++] = ref_parent;
+		argv[argc++] = ref1;
 	}
-	return system(cmd);
+
+	if (path && *path) {
+		argv[argc++] = "--";
+		argv[argc++] = path;
+	}
+	argv[argc] = NULL;
+
+	return run_cmd_argv(argv, NULL, 0, NULL, NULL, NULL);
 }
 
 int
 git_show_log(const char *repo_dir, const char *ref, const char *path, int limit)
 {
-	char cmd[4096];
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	char limit_str[32];
+	const char *argv[12];
+	int argc = 0;
+	argv[argc++] = "git";
+	argv[argc++] = "-C";
+	argv[argc++] = dir;
+	argv[argc++] = "log";
+	argv[argc++] = "--stat";
+	argv[argc++] = "--color=auto";
+
 	if (limit > 0) {
-		snprintf(cmd, sizeof(cmd), "git -C \"%s\" log -n %d --stat --color=auto \"%s\" -- \"%s\"",
-		         repo_dir ? repo_dir : ".", limit, ref ? ref : "HEAD", path ? path : "");
-	} else {
-		snprintf(cmd, sizeof(cmd), "git -C \"%s\" log --stat --color=auto \"%s\" -- \"%s\"",
-		         repo_dir ? repo_dir : ".", ref ? ref : "HEAD", path ? path : "");
+		argv[argc++] = "-n";
+		snprintf(limit_str, sizeof(limit_str), "%d", limit);
+		argv[argc++] = limit_str;
 	}
-	return system(cmd);
+	argv[argc++] = (ref && *ref) ? ref : "HEAD";
+
+	if (path && *path) {
+		argv[argc++] = "--";
+		argv[argc++] = path;
+	}
+	argv[argc] = NULL;
+
+	return run_cmd_argv(argv, NULL, 0, NULL, NULL, NULL);
 }
 
 char *
 git_read_file_at_ref(const char *repo_dir, const char *ref, const char *path, size_t *out_len)
 {
-	char cmd[4096];
-	snprintf(cmd, sizeof(cmd), "git -C \"%s\" show \"%s:%s\" 2>/dev/null",
-	         repo_dir ? repo_dir : ".", ref ? ref : "HEAD", path);
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	char spec[2048];
+	snprintf(spec, sizeof(spec), "%s:%s", (ref && *ref) ? ref : "HEAD", path);
 
-	FILE *fp = popen(cmd, "r");
-	if (!fp) return NULL;
+	const char *argv[] = {"git", "-C", dir, "show", spec, NULL};
+	struct strbuf out;
+	strbuf_init(&out, 4096);
 
-	struct strbuf sb;
-	strbuf_init(&sb, 4096);
-
-	char buf[4096];
-	size_t n;
-	while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-		strbuf_append_len(&sb, buf, n);
-	}
-	int status = pclose(fp);
-	if (status != 0) {
-		strbuf_free(&sb);
+	if (run_cmd_argv(argv, NULL, 0, &out, NULL, NULL) != 0) {
+		strbuf_free(&out);
 		return NULL;
 	}
-	return strbuf_detach(&sb, out_len);
+	return strbuf_detach(&out, out_len);
 }
 
 int
 git_run_gc(const char *repo_dir)
 {
-	char cmd[2048];
-	snprintf(cmd, sizeof(cmd), "git -C \"%s\" gc --prune=now --quiet", repo_dir ? repo_dir : ".");
-	return system(cmd) == 0 ? 0 : -1;
+	const char *dir = (repo_dir && *repo_dir) ? repo_dir : ".";
+	const char *argv[] = {"git", "-C", dir, "gc", "--prune=now", "--quiet", NULL};
+	return run_cmd_argv(argv, NULL, 0, NULL, NULL, NULL) == 0 ? 0 : -1;
 }
