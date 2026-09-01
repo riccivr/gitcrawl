@@ -56,9 +56,10 @@ LIST_OUT=$(./gitcrawl list -d "$TEST_REPO" -b feature-posix)
 echo "$LIST_OUT" | grep -q "archive/example.com/posix-spec/index.md"
 echo "  [posix] list command verified"
 
-# Test 9: Git GC command
+# Test 9: Git GC command with -d repository target
 ./gitcrawl gc -d "$TEST_REPO"
-echo "  [posix] gc repository maintenance verified"
+[ -d "$TEST_REPO/.git/objects/pack" ]
+echo "  [posix] gc -d repository maintenance verified"
 
 # Test 10: Shell Injection Resilience Test
 INJECT_CANARY="/tmp/gitcrawl_inject_canary"

@@ -8,8 +8,17 @@
 #if !defined(_WIN32)
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+static int
+set_nonblocking(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0) return -1;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
 
 int
 run_cmd_argv(const char *const *argv,
@@ -100,38 +109,108 @@ run_cmd_argv(const char *const *argv,
 	if (pipe_out[1] >= 0) close(pipe_out[1]);
 	if (pipe_err[1] >= 0) close(pipe_err[1]);
 
-	/* Write stdin data */
-	if (pipe_in[1] >= 0) {
-		const char *p = (const char *)stdin_data;
-		size_t remaining = stdin_len;
-		while (remaining > 0) {
-			ssize_t w = write(pipe_in[1], p, remaining);
-			if (w <= 0)
-				break;
-			p += w;
-			remaining -= w;
+	int in_fd = pipe_in[1];
+	int out_fd = pipe_out[0];
+	int err_fd = pipe_err[0];
+
+	if (in_fd >= 0) set_nonblocking(in_fd);
+	if (out_fd >= 0) set_nonblocking(out_fd);
+	if (err_fd >= 0) set_nonblocking(err_fd);
+
+	const char *stdin_ptr = (const char *)stdin_data;
+	size_t stdin_rem = stdin_len;
+
+	/* Multiplexed I/O event loop using poll() to prevent pipe-full deadlocks */
+	while (in_fd >= 0 || out_fd >= 0 || err_fd >= 0) {
+		struct pollfd fds[3];
+		nfds_t nfds = 0;
+		int in_idx = -1, out_idx = -1, err_idx = -1;
+
+		if (in_fd >= 0) {
+			in_idx = (int)nfds;
+			fds[nfds].fd = in_fd;
+			fds[nfds].events = POLLOUT;
+			fds[nfds].revents = 0;
+			nfds++;
 		}
-		close(pipe_in[1]);
+		if (out_fd >= 0) {
+			out_idx = (int)nfds;
+			fds[nfds].fd = out_fd;
+			fds[nfds].events = POLLIN;
+			fds[nfds].revents = 0;
+			nfds++;
+		}
+		if (err_fd >= 0) {
+			err_idx = (int)nfds;
+			fds[nfds].fd = err_fd;
+			fds[nfds].events = POLLIN;
+			fds[nfds].revents = 0;
+			nfds++;
+		}
+
+		if (nfds == 0) break;
+
+		int ret = poll(fds, nfds, -1);
+		if (ret < 0) {
+			if (errno == EINTR) continue;
+			break;
+		}
+
+		/* Handle stdin non-blocking write */
+		if (in_idx >= 0 && (fds[in_idx].revents & (POLLOUT | POLLERR | POLLHUP))) {
+			if (fds[in_idx].revents & POLLOUT) {
+				ssize_t w = write(in_fd, stdin_ptr, stdin_rem);
+				if (w > 0) {
+					stdin_ptr += w;
+					stdin_rem -= (size_t)w;
+					if (stdin_rem == 0) {
+						close(in_fd);
+						in_fd = -1;
+					}
+				} else if (w < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+					close(in_fd);
+					in_fd = -1;
+				}
+			} else {
+				close(in_fd);
+				in_fd = -1;
+			}
+		}
+
+		/* Handle stdout non-blocking read */
+		if (out_idx >= 0 && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+			char buf[8192];
+			ssize_t r;
+			int had_read = 0;
+			while ((r = read(out_fd, buf, sizeof(buf))) > 0) {
+				had_read = 1;
+				strbuf_append_len(stdout_buf, buf, (size_t)r);
+			}
+			if (r == 0 || (!had_read && (fds[out_idx].revents & (POLLHUP | POLLERR)))) {
+				close(out_fd);
+				out_fd = -1;
+			}
+		}
+
+		/* Handle stderr non-blocking read */
+		if (err_idx >= 0 && (fds[err_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+			char buf[8192];
+			ssize_t r;
+			int had_read = 0;
+			while ((r = read(err_fd, buf, sizeof(buf))) > 0) {
+				had_read = 1;
+				strbuf_append_len(stderr_buf, buf, (size_t)r);
+			}
+			if (r == 0 || (!had_read && (fds[err_idx].revents & (POLLHUP | POLLERR)))) {
+				close(err_fd);
+				err_fd = -1;
+			}
+		}
 	}
 
-	/* Read stdout and stderr */
-	if (pipe_out[0] >= 0) {
-		char buf[4096];
-		ssize_t r;
-		while ((r = read(pipe_out[0], buf, sizeof(buf))) > 0) {
-			strbuf_append_len(stdout_buf, buf, r);
-		}
-		close(pipe_out[0]);
-	}
-
-	if (pipe_err[0] >= 0) {
-		char buf[4096];
-		ssize_t r;
-		while ((r = read(pipe_err[0], buf, sizeof(buf))) > 0) {
-			strbuf_append_len(stderr_buf, buf, r);
-		}
-		close(pipe_err[0]);
-	}
+	if (in_fd >= 0) close(in_fd);
+	if (out_fd >= 0) close(out_fd);
+	if (err_fd >= 0) close(err_fd);
 
 	int status = 0;
 	while (waitpid(pid, &status, 0) < 0) {
@@ -145,7 +224,7 @@ run_cmd_argv(const char *const *argv,
 }
 
 #else
-/* Windows implementation using CreateProcessA */
+/* Windows implementation using CreateProcessA and overlapped/pipe handles */
 #include <windows.h>
 #include <io.h>
 
@@ -160,7 +239,6 @@ run_cmd_argv(const char *const *argv,
 	if (!argv || !argv[0])
 		return -1;
 
-	/* Build Windows command line with proper quoting */
 	struct strbuf cmdline;
 	strbuf_init(&cmdline, 512);
 	for (size_t i = 0; argv[i]; i++) {

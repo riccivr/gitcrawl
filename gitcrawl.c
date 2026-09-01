@@ -29,6 +29,7 @@ usage(int status)
 		"  -m message             Commit message\n"
 		"  -l depth               Recursion depth for crawl (default: 1)\n"
 		"  -p max_pages           Max pages to crawl (default: 50)\n"
+		"  -w delay_ms            Crawl request delay in milliseconds (default: 0)\n"
 		"  -s                     Same domain only during crawl (default: off)\n"
 		"  -f format              Output format for show (md, html, json)\n"
 		"  -i                     Read content from stdin for the specified URL\n"
@@ -163,12 +164,14 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 	int depth = 1;
 	int max_pages = 50;
 	int same_domain = 0;
+	int delay_ms = 0;
 
 	ARGBEGIN {
 	case 'b': branch = EARGF(usage(1)); break;
 	case 'd': repo_dir = EARGF(usage(1)); break;
 	case 'l': depth = atoi(EARGF(usage(1))); break;
 	case 'p': max_pages = atoi(EARGF(usage(1))); break;
+	case 'w': delay_ms = atoi(EARGF(usage(1))); break;
 	case 's': same_domain = 1; break;
 	default: usage(1); break;
 	} ARGEND;
@@ -227,12 +230,19 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 		if (visited_count >= visited_cap) {
 			size_t ncap = visited_cap * 2;
 			char **nvisited = realloc(visited, ncap * sizeof(char *));
-			if (nvisited) {
-				visited = nvisited;
-				visited_cap = ncap;
+			if (!nvisited) {
+				fprintf(stderr, "Error: Out of memory growing visited set\n");
+				free(current_url);
+				break;
 			}
+			visited = nvisited;
+			visited_cap = ncap;
 		}
 		visited[visited_count++] = strdup(current_url);
+
+		if (delay_ms > 0 && visited_count > 1) {
+			usleep((useconds_t)delay_ms * 1000);
+		}
 
 		struct crawl_page_data page;
 		printf("[%lu/%d] Crawling (d=%d): %s\n", (unsigned long)visited_count, max_pages, cur_d, current_url);
@@ -264,16 +274,16 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 							if (q_tail >= q_cap) {
 								size_t ncap = q_cap * 2;
 								struct crawl_queue_item *nq = realloc(queue, ncap * sizeof(struct crawl_queue_item));
-								if (nq) {
-									queue = nq;
-									q_cap = ncap;
+								if (!nq) {
+									fprintf(stderr, "Warning: Out of memory growing crawl queue\n");
+									break;
 								}
+								queue = nq;
+								q_cap = ncap;
 							}
-							if (q_tail < q_cap) {
-								queue[q_tail].url = strdup(link_parsed.normalized_url);
-								queue[q_tail].depth = cur_d + 1;
-								q_tail++;
-							}
+							queue[q_tail].url = strdup(link_parsed.normalized_url);
+							queue[q_tail].depth = cur_d + 1;
+							q_tail++;
 						}
 					}
 				}
@@ -440,6 +450,18 @@ cmd_list(int argc, char **argv, const char *repo_dir, const char *branch)
 	return 0;
 }
 
+static int
+cmd_gc(int argc, char **argv, const char *repo_dir)
+{
+	ARGBEGIN {
+	case 'd': repo_dir = EARGF(usage(1)); break;
+	default: usage(1); break;
+	} ARGEND;
+	(void)argc;
+
+	return git_run_gc(repo_dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -477,7 +499,7 @@ main(int argc, char **argv)
 	} else if (strcmp(cmd, "list") == 0) {
 		return cmd_list(argc, argv, repo_dir, branch);
 	} else if (strcmp(cmd, "gc") == 0) {
-		return git_run_gc(repo_dir);
+		return cmd_gc(argc, argv, repo_dir);
 	} else {
 		fprintf(stderr, "Unknown command: %s\n", cmd);
 		usage(1);

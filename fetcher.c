@@ -129,6 +129,10 @@ void
 crawl_link_queue_push(struct crawl_link_queue *q, const char *url)
 {
 	if (!url || !*url) return;
+	for (size_t i = 0; i < q->count; i++) {
+		if (strcmp(q->urls[i], url) == 0)
+			return;
+	}
 	if (q->count >= q->cap) {
 		size_t ncap = q->cap == 0 ? 32 : q->cap * 2;
 		char **nurls = realloc(q->urls, ncap * sizeof(char *));
@@ -204,35 +208,31 @@ extract_outgoing_links(const char *html, size_t len, const char *base_url, struc
 
 	while (p < end) {
 		if (*p == '<' && p + 2 < end && (p[1] == 'a' || p[1] == 'A') && isspace((unsigned char)p[2])) {
+			const char *tag_start = p;
 			const char *tag_end = strchr(p, '>');
 			if (tag_end && tag_end < end) {
-				char tag_buf[1024] = {0};
-				size_t tlen = tag_end - p + 1;
-				if (tlen < sizeof(tag_buf)) {
-					memcpy(tag_buf, p, tlen);
-					const char *href_pos = gitcrawl_ci_find(tag_buf, "href=");
-					if (href_pos) {
-						href_pos += 5;
-						while (*href_pos && isspace((unsigned char)*href_pos)) href_pos++;
-						char quote = 0;
-						if (*href_pos == '"' || *href_pos == '\'') {
-							quote = *href_pos++;
-						}
-						char link_val[1024] = {0};
-						size_t pos = 0;
-						while (*href_pos && pos + 1 < sizeof(link_val)) {
-							if (quote && *href_pos == quote) break;
-							if (!quote && (isspace((unsigned char)*href_pos) || *href_pos == '>')) break;
-							link_val[pos++] = *href_pos++;
-						}
-						link_val[pos] = '\0';
+				const char *href_pos = gitcrawl_ci_find(tag_start, "href=");
+				if (href_pos && href_pos < tag_end) {
+					href_pos += 5;
+					while (href_pos < tag_end && isspace((unsigned char)*href_pos)) href_pos++;
+					char quote = 0;
+					if (href_pos < tag_end && (*href_pos == '"' || *href_pos == '\'')) {
+						quote = *href_pos++;
+					}
+					char link_val[8192] = {0};
+					size_t pos = 0;
+					while (href_pos < tag_end && pos + 1 < sizeof(link_val)) {
+						if (quote && *href_pos == quote) break;
+						if (!quote && (isspace((unsigned char)*href_pos) || *href_pos == '>')) break;
+						link_val[pos++] = *href_pos++;
+					}
+					link_val[pos] = '\0';
 
-						if (link_val[0] && link_val[0] != '#' && strncmp(link_val, "javascript:", 11) != 0 &&
-						    strncmp(link_val, "mailto:", 7) != 0) {
-							char resolved[8192] = {0};
-							if (resolve_url(base_url, link_val, resolved, sizeof(resolved)) == 0) {
-								crawl_link_queue_push(queue, resolved);
-							}
+					if (link_val[0] && link_val[0] != '#' && strncmp(link_val, "javascript:", 11) != 0 &&
+					    strncmp(link_val, "mailto:", 7) != 0) {
+						char resolved[8192] = {0};
+						if (resolve_url(base_url, link_val, resolved, sizeof(resolved)) == 0) {
+							crawl_link_queue_push(queue, resolved);
 						}
 					}
 				}

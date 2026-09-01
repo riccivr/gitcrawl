@@ -111,23 +111,46 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 		strcpy(out->scheme, "https");
 	}
 
-	const char *host_start = p;
-	while (*p && *p != '/' && *p != '?' && *p != '#') p++;
-	size_t hlen = p - host_start;
-	if (hlen == 0 || hlen >= sizeof(out->host))
-		return -1;
+	/* IPv6 bracketed host: [2001:db8::1] */
+	if (*p == '[') {
+		const char *bracket_end = strchr(p, ']');
+		if (!bracket_end)
+			return -1;
+		size_t hlen = bracket_end - p + 1;
+		if (hlen >= sizeof(out->host))
+			return -1;
+		memcpy(out->host, p, hlen);
+		out->host[hlen] = '\0';
+		for (size_t i = 0; out->host[i]; i++)
+			out->host[i] = (char)tolower((unsigned char)out->host[i]);
 
-	memcpy(out->host, host_start, hlen);
-	out->host[hlen] = '\0';
-	for (size_t i = 0; out->host[i]; i++)
-		out->host[i] = (char)tolower((unsigned char)out->host[i]);
-
-	char *colon = strchr(out->host, ':');
-	if (colon) {
-		*colon = '\0';
-		out->port = atoi(colon + 1);
+		p = bracket_end + 1;
+		if (*p == ':') {
+			p++;
+			out->port = atoi(p);
+			while (isdigit((unsigned char)*p)) p++;
+		} else {
+			out->port = (strcmp(out->scheme, "http") == 0) ? 80 : 443;
+		}
 	} else {
-		out->port = (strcmp(out->scheme, "http") == 0) ? 80 : 443;
+		const char *host_start = p;
+		while (*p && *p != '/' && *p != '?' && *p != '#') p++;
+		size_t hlen = p - host_start;
+		if (hlen == 0 || hlen >= sizeof(out->host))
+			return -1;
+
+		memcpy(out->host, host_start, hlen);
+		out->host[hlen] = '\0';
+		for (size_t i = 0; out->host[i]; i++)
+			out->host[i] = (char)tolower((unsigned char)out->host[i]);
+
+		char *colon = strchr(out->host, ':');
+		if (colon) {
+			*colon = '\0';
+			out->port = atoi(colon + 1);
+		} else {
+			out->port = (strcmp(out->scheme, "http") == 0) ? 80 : 443;
+		}
 	}
 
 	const char *path_start = p;
@@ -154,8 +177,11 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 		}
 	}
 
+	int is_default_port = (strcmp(out->scheme, "http") == 0 && out->port == 80) ||
+	                      (strcmp(out->scheme, "https") == 0 && out->port == 443);
+
 	if (out->query[0]) {
-		if (out->port == 80 || out->port == 443) {
+		if (is_default_port) {
 			snprintf(out->normalized_url, sizeof(out->normalized_url),
 			         "%s://%s%s?%s", out->scheme, out->host, out->path, out->query);
 		} else {
@@ -163,7 +189,7 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 			         "%s://%s:%d%s?%s", out->scheme, out->host, out->port, out->path, out->query);
 		}
 	} else {
-		if (out->port == 80 || out->port == 443) {
+		if (is_default_port) {
 			snprintf(out->normalized_url, sizeof(out->normalized_url),
 			         "%s://%s%s", out->scheme, out->host, out->path);
 		} else {
@@ -181,6 +207,9 @@ generate_shard_paths(const struct parsed_url *url, struct shard_paths *out)
 	if (!url || !out)
 		return -1;
 	memset(out, 0, sizeof(*out));
+
+	char safe_host[512] = {0};
+	sanitize_path_segment(url->host, safe_host, sizeof(safe_host));
 
 	char path_clean[1024] = {0};
 	const char *p = url->path;
@@ -215,10 +244,10 @@ generate_shard_paths(const struct parsed_url *url, struct shard_paths *out)
 			if (safe_q[i] == '=') safe_q[i] = '-';
 		}
 		snprintf(out->sharded_dir, sizeof(out->sharded_dir), "archive/%s/%s/q_%s",
-		         url->host, path_clean, safe_q);
+		         safe_host, path_clean, safe_q);
 	} else {
 		snprintf(out->sharded_dir, sizeof(out->sharded_dir), "archive/%s/%s",
-		         url->host, path_clean);
+		         safe_host, path_clean);
 	}
 
 	snprintf(out->md_path, sizeof(out->md_path), "%s/index.md", out->sharded_dir);
