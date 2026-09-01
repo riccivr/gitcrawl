@@ -4,7 +4,7 @@ Lightweight web snapshot utility and crawler for Git repositories in clean C99.
 
 `gitcrawl` snapshots web pages and commits their history directly into Git repositories, storing diff-friendly Markdown alongside original compressed HTML and JSON metadata.
 
-Based on the core concept in [*Preserving the Web with Git*](https://riccivr.github.io/blog/post.html?post=preserving-the-web-with-git).
+Based on the core concept in [*Preserving the Web with Git*](https://riccivr.github.io/blog/preserving-the-web-with-git.html).
 
 [![gitcrawl Demo](assets/demo.gif)](https://asciinema.org/a/ZxDdqnFFIVMekWNU)
 
