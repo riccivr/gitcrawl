@@ -177,6 +177,11 @@ crawl_page_data_free(struct crawl_page_data *page)
 	if (page->markdown) free(page->markdown);
 	if (page->metadata_json) free(page->metadata_json);
 	if (page->html_gz) free(page->html_gz);
+	if (page->assets) {
+		for (size_t i = 0; i < page->asset_count; i++)
+			free(page->assets[i].data);
+		free(page->assets);
+	}
 	crawl_link_queue_free(&page->links);
 	memset(page, 0, sizeof(*page));
 }
@@ -295,14 +300,15 @@ build_metadata_json(struct crawl_page_data *page)
 	strbuf_append_str(&sb, "\",\n  \"server\": \"");
 	json_escape_append(&sb, page->server);
 	strbuf_append_str(&sb, "\",\n  \"raw_bytes\": ");
-	strbuf_printf(&sb, "%lu,\n  \"markdown_bytes\": %lu\n}\n",
-	              (unsigned long)page->raw_len, (unsigned long)page->md_len);
+	strbuf_printf(&sb, "%lu,\n  \"markdown_bytes\": %lu,\n  \"asset_count\": %lu\n}\n",
+	              (unsigned long)page->raw_len, (unsigned long)page->md_len,
+	              (unsigned long)page->asset_count);
 
 	page->metadata_json = strbuf_detach(&sb, &page->json_len);
 }
 
 int
-fetch_url_data(const char *url_str, struct crawl_page_data *page)
+fetch_url_data(const char *url_str, struct crawl_page_data *page, const char *if_none_match)
 {
 	crawl_page_data_init(page);
 	if (parse_and_normalize_url(url_str, &page->url_info) < 0)
@@ -310,17 +316,34 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 	if (generate_shard_paths(&page->url_info, &page->paths) < 0)
 		return -1;
 
-	const char *argv[] = {
-		"curl", "-sSL", "--compressed",
-		"-A", "gitcrawl/1.1.0 (+https://github.com/riccivr/gitcrawl)",
-		"-i", page->url_info.normalized_url,
-		NULL
-	};
+	char inm_header[256];
+	inm_header[0] = '\0';
+	if (if_none_match && *if_none_match)
+		snprintf(inm_header, sizeof(inm_header), "If-None-Match: %s", if_none_match);
+
+	const char *argv[16];
+	int ac = 0;
+	argv[ac++] = "curl";
+	argv[ac++] = "-sSL";
+	argv[ac++] = "--compressed";
+	argv[ac++] = "--connect-timeout";
+	argv[ac++] = "10";
+	argv[ac++] = "--max-time";
+	argv[ac++] = "60";
+	argv[ac++] = "-A";
+	argv[ac++] = "gitcrawl/1.1.0 (+https://github.com/riccivr/gitcrawl)";
+	if (inm_header[0]) {
+		argv[ac++] = "-H";
+		argv[ac++] = inm_header;
+	}
+	argv[ac++] = "-i";
+	argv[ac++] = page->url_info.normalized_url;
+	argv[ac++] = NULL;
 
 	struct strbuf raw_resp;
 	strbuf_init(&raw_resp, 16384);
 
-	int status = run_cmd_argv(argv, NULL, 0, &raw_resp, NULL, NULL);
+	int status = run_cmd_argv_timeout(argv, NULL, 0, &raw_resp, NULL, NULL, 70000);
 	if (status != 0 || raw_resp.len == 0) {
 		strbuf_free(&raw_resp);
 		return -1;
@@ -379,6 +402,13 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 		}
 	}
 
+	if (page->status_code == 304) {
+		page->not_modified = 1;
+		strbuf_free(&raw_resp);
+		build_metadata_json(page);
+		return 0;
+	}
+
 	page->raw_len = raw_resp.len - (body_start - raw_resp.buf);
 	page->raw_html = malloc(page->raw_len + 1);
 	if (!page->raw_html) {
@@ -400,6 +430,152 @@ fetch_url_data(const char *url_str, struct crawl_page_data *page)
 	build_metadata_json(page);
 
 	return 0;
+}
+
+static int
+asset_basename(const char *url, char *out, size_t cap)
+{
+	const char *path = strrchr(url, '/');
+	path = path ? path + 1 : url;
+	const char *q = strchr(path, '?');
+	size_t n = q ? (size_t)(q - path) : strlen(path);
+	if (n == 0) {
+		snprintf(out, cap, "asset.bin");
+		return 0;
+	}
+	size_t w = 0;
+	for (size_t i = 0; i < n && w + 1 < cap; i++) {
+		unsigned char c = (unsigned char)path[i];
+		if (isalnum(c) || c == '.' || c == '-' || c == '_')
+			out[w++] = (char)c;
+		else
+			out[w++] = '_';
+	}
+	out[w] = '\0';
+	return 0;
+}
+
+static int
+fetch_binary(const char *url, unsigned char **out, size_t *out_len)
+{
+	const char *argv[] = {
+		"curl", "-sSL", "--compressed",
+		"--connect-timeout", "10",
+		"--max-time", "30",
+		"-A", "gitcrawl/1.1.0 (+https://github.com/riccivr/gitcrawl)",
+		url,
+		NULL
+	};
+	struct strbuf sb;
+	strbuf_init(&sb, 4096);
+	int status = run_cmd_argv_timeout(argv, NULL, 0, &sb, NULL, NULL, 40000);
+	if (status != 0 || sb.len == 0) {
+		strbuf_free(&sb);
+		return -1;
+	}
+	*out_len = sb.len;
+	*out = (unsigned char *)strbuf_detach(&sb, NULL);
+	return 0;
+}
+
+void
+fetch_page_assets(struct crawl_page_data *page, int same_host_only, size_t max_assets)
+{
+	if (!page || !page->sanitized_html || max_assets == 0)
+		return;
+
+	const char *html = page->sanitized_html;
+	size_t len = page->sanitized_len;
+	const char *p = html;
+	const char *end = html + len;
+
+	while (p < end && page->asset_count < max_assets) {
+		if (*p != '<') {
+			p++;
+			continue;
+		}
+		int want = 0;
+		if (p + 4 < end && (p[1] == 'i' || p[1] == 'I') &&
+		    (p[2] == 'm' || p[2] == 'M') && (p[3] == 'g' || p[3] == 'G'))
+			want = 1;
+		if (p + 5 < end && (p[1] == 'l' || p[1] == 'L') &&
+		    (p[2] == 'i' || p[2] == 'I') && (p[3] == 'n' || p[3] == 'N') &&
+		    (p[4] == 'k' || p[4] == 'K'))
+			want = 1;
+		if (!want) {
+			p++;
+			continue;
+		}
+		const char *tag_end = strchr(p, '>');
+		if (!tag_end || tag_end >= end) {
+			p++;
+			continue;
+		}
+		const char *src = gitcrawl_ci_find(p, "src=");
+		if (!src || src > tag_end)
+			src = gitcrawl_ci_find(p, "href=");
+		if (!src || src > tag_end) {
+			p = tag_end + 1;
+			continue;
+		}
+		src = strchr(src, '=');
+		if (!src || src > tag_end) {
+			p = tag_end + 1;
+			continue;
+		}
+		src++;
+		while (src < tag_end && isspace((unsigned char)*src)) src++;
+		char quote = 0;
+		if (*src == '"' || *src == '\'')
+			quote = *src++;
+		char val[2048] = {0};
+		size_t vi = 0;
+		while (src < tag_end && vi + 1 < sizeof(val)) {
+			if (quote && *src == quote) break;
+			if (!quote && (isspace((unsigned char)*src) || *src == '>')) break;
+			val[vi++] = *src++;
+		}
+		val[vi] = '\0';
+
+		char resolved[8192];
+		if (resolve_url(page->url_info.normalized_url, val, resolved, sizeof(resolved)) != 0) {
+			p = tag_end + 1;
+			continue;
+		}
+		struct parsed_url au;
+		if (parse_and_normalize_url(resolved, &au) != 0) {
+			p = tag_end + 1;
+			continue;
+		}
+		if (same_host_only && strcmp(au.host, page->url_info.host) != 0) {
+			p = tag_end + 1;
+			continue;
+		}
+
+		char base[256];
+		asset_basename(au.normalized_url, base, sizeof(base));
+
+		if (page->asset_count >= page->asset_cap) {
+			size_t ncap = page->asset_cap == 0 ? 4 : page->asset_cap * 2;
+			struct crawl_asset *na = realloc(page->assets, ncap * sizeof(*na));
+			if (!na)
+				break;
+			page->assets = na;
+			page->asset_cap = ncap;
+		}
+		struct crawl_asset *a = &page->assets[page->asset_count];
+		memset(a, 0, sizeof(*a));
+		snprintf(a->rel_path, sizeof(a->rel_path), "%s/assets/%s", page->paths.sharded_dir, base);
+		if (fetch_binary(au.normalized_url, &a->data, &a->len) == 0 && a->data && a->len > 0)
+			page->asset_count++;
+		p = tag_end + 1;
+	}
+
+	if (page->metadata_json) {
+		free(page->metadata_json);
+		page->metadata_json = NULL;
+		build_metadata_json(page);
+	}
 }
 
 int

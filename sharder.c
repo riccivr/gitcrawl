@@ -111,6 +111,20 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 		strcpy(out->scheme, "https");
 	}
 
+	/* Strip userinfo (user:pass@host) from the authority. */
+	{
+		const char *auth_end = p;
+		while (*auth_end && *auth_end != '/' && *auth_end != '?' && *auth_end != '#')
+			auth_end++;
+		const char *at = NULL;
+		for (const char *s = p; s < auth_end; s++) {
+			if (*s == '@')
+				at = s;
+		}
+		if (at)
+			p = at + 1;
+	}
+
 	/* IPv6 bracketed host: [2001:db8::1] */
 	if (*p == '[') {
 		const char *bracket_end = strchr(p, ']');
@@ -139,17 +153,38 @@ parse_and_normalize_url(const char *raw_url, struct parsed_url *out)
 		if (hlen == 0 || hlen >= sizeof(out->host))
 			return -1;
 
-		memcpy(out->host, host_start, hlen);
-		out->host[hlen] = '\0';
-		for (size_t i = 0; out->host[i]; i++)
-			out->host[i] = (char)tolower((unsigned char)out->host[i]);
+		char hostbuf[256];
+		if (hlen >= sizeof(hostbuf))
+			return -1;
+		memcpy(hostbuf, host_start, hlen);
+		hostbuf[hlen] = '\0';
+		for (size_t i = 0; hostbuf[i]; i++)
+			hostbuf[i] = (char)tolower((unsigned char)hostbuf[i]);
 
-		char *colon = strchr(out->host, ':');
-		if (colon) {
-			*colon = '\0';
-			out->port = atoi(colon + 1);
-		} else {
+		int colons = 0;
+		for (size_t i = 0; hostbuf[i]; i++) {
+			if (hostbuf[i] == ':')
+				colons++;
+		}
+
+		if (colons > 1) {
+			/* Unbracketed IPv6: wrap so curl and shard paths stay valid. */
+			if (hlen + 2 >= sizeof(out->host))
+				return -1;
+			out->host[0] = '[';
+			memcpy(out->host + 1, hostbuf, hlen);
+			out->host[1 + hlen] = ']';
+			out->host[2 + hlen] = '\0';
 			out->port = (strcmp(out->scheme, "http") == 0) ? 80 : 443;
+		} else {
+			char *colon = strchr(hostbuf, ':');
+			if (colon) {
+				*colon = '\0';
+				out->port = atoi(colon + 1);
+			} else {
+				out->port = (strcmp(out->scheme, "http") == 0) ? 80 : 443;
+			}
+			snprintf(out->host, sizeof(out->host), "%s", hostbuf);
 		}
 	}
 

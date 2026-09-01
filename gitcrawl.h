@@ -12,5 +12,6 @@
 #include "process_utils.h"
 #include "approx_search.h"
 #include "fetcher.h"
+#include "robots.h"
 
 #endif

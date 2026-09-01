@@ -73,6 +73,11 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 		git_index_builder_add_blob(&b, "100644", gz_sha, page->paths.gz_path);
 	}
 	git_index_builder_add_blob(&b, "100644", json_sha, page->paths.json_path);
+	for (size_t i = 0; i < page->asset_count; i++) {
+		char asset_sha[65] = {0};
+		if (git_write_blob(repo_dir, page->assets[i].data, page->assets[i].len, asset_sha) == 0)
+			git_index_builder_add_blob(&b, "100644", asset_sha, page->assets[i].rel_path);
+	}
 
 	char tree_sha[65] = {0};
 	if (git_index_builder_write_tree(&b, tree_sha) < 0) {
@@ -108,7 +113,37 @@ archive_single_page(const char *repo_dir, const char *branch, const char *commit
 	printf("  Tree:   %s\n", tree_sha);
 	printf("  Commit: %s -> %s\n", commit_sha, ref_name);
 	printf("  Paths:  %s\n", page->paths.sharded_dir);
+	if (page->asset_count)
+		printf("  Assets: %lu\n", (unsigned long)page->asset_count);
 	return 0;
+}
+
+static int
+lookup_stored_etag(const char *repo_dir, const char *branch, const char *json_path, char *out, size_t cap)
+{
+	out[0] = '\0';
+	size_t len = 0;
+	char *json = git_read_file_at_ref(repo_dir, branch ? branch : "archive", json_path, &len);
+	if (!json)
+		return -1;
+	const char *key = strstr(json, "\"etag\"");
+	if (key) {
+		const char *colon = strchr(key, ':');
+		if (colon) {
+			colon++;
+			while (*colon && (*colon == ' ' || *colon == '\t')) colon++;
+			if (*colon == '"') {
+				colon++;
+				size_t i = 0;
+				while (colon[i] && colon[i] != '"' && i + 1 < cap)
+					i++;
+				memcpy(out, colon, i);
+				out[i] = '\0';
+			}
+		}
+	}
+	free(json);
+	return out[0] ? 0 : -1;
 }
 
 static int
@@ -138,8 +173,20 @@ cmd_archive(int argc, char **argv, const char *repo_dir, const char *branch, con
 	if (use_stdin) {
 		res = ingest_stream_data(target ? target : "https://stdin.pipe/input.html", stdin, &page);
 	} else {
+		char etag[128] = {0};
+		struct parsed_url preview;
+		struct shard_paths paths;
+		if (parse_and_normalize_url(target, &preview) == 0 && generate_shard_paths(&preview, &paths) == 0)
+			lookup_stored_etag(repo_dir, branch, paths.json_path, etag, sizeof(etag));
 		printf("Fetching: %s ...\n", target);
-		res = fetch_url_data(target, &page);
+		res = fetch_url_data(target, &page, etag[0] ? etag : NULL);
+		if (res == 0 && page.not_modified) {
+			printf("Unchanged (HTTP 304): %s\n", page.url_info.normalized_url);
+			crawl_page_data_free(&page);
+			return 0;
+		}
+		if (res == 0)
+			fetch_page_assets(&page, 1, 16);
 	}
 
 	if (res < 0) {
@@ -195,6 +242,10 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 	size_t q_tail = 0;
 
 	queue[q_tail].url = strdup(base_parsed.normalized_url);
+	if (!queue[q_tail].url) {
+		free(queue);
+		return 1;
+	}
 	queue[q_tail].depth = 0;
 	q_tail++;
 
@@ -206,6 +257,12 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 		return 1;
 	}
 	size_t visited_count = 0;
+
+	struct robots_rules robots;
+	robots_rules_init(&robots);
+	robots_fetch_for_host(base_parsed.scheme, base_parsed.host, base_parsed.port, &robots);
+	if (delay_ms == 0 && robots.crawl_delay_ms > 0)
+		delay_ms = robots.crawl_delay_ms;
 
 	printf("Starting crawl: %s (depth=%d, max_pages=%d, same_domain=%s)\n",
 	       base_parsed.normalized_url, depth, max_pages, same_domain ? "true" : "false");
@@ -238,7 +295,25 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 			visited = nvisited;
 			visited_cap = ncap;
 		}
-		visited[visited_count++] = strdup(current_url);
+		{
+			char *kept = strdup(current_url);
+			if (!kept) {
+				fprintf(stderr, "Error: Out of memory recording visited URL\n");
+				free(current_url);
+				break;
+			}
+			visited[visited_count++] = kept;
+		}
+
+		struct parsed_url cur_parsed;
+		if (parse_and_normalize_url(current_url, &cur_parsed) == 0) {
+			if (strcmp(cur_parsed.host, robots.host) == 0 &&
+			    !robots_allowed(&robots, cur_parsed.path)) {
+				printf("robots.txt skipped: %s\n", current_url);
+				free(current_url);
+				continue;
+			}
+		}
 
 		if (delay_ms > 0 && visited_count > 1) {
 			usleep((useconds_t)delay_ms * 1000);
@@ -246,8 +321,18 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 
 		struct crawl_page_data page;
 		printf("[%lu/%d] Crawling (d=%d): %s\n", (unsigned long)visited_count, max_pages, cur_d, current_url);
-		if (fetch_url_data(current_url, &page) == 0) {
-			archive_single_page(repo_dir, branch, NULL, &page);
+		char etag[128] = {0};
+		struct shard_paths cur_paths;
+		if (parse_and_normalize_url(current_url, &cur_parsed) == 0 &&
+		    generate_shard_paths(&cur_parsed, &cur_paths) == 0)
+			lookup_stored_etag(repo_dir, branch, cur_paths.json_path, etag, sizeof(etag));
+		if (fetch_url_data(current_url, &page, etag[0] ? etag : NULL) == 0) {
+			if (page.not_modified) {
+				printf("Unchanged (HTTP 304): %s\n", current_url);
+			} else {
+				fetch_page_assets(&page, 1, 8);
+				archive_single_page(repo_dir, branch, NULL, &page);
+			}
 
 			if (cur_d < depth) {
 				for (size_t k = 0; k < page.links.count && (int)q_tail < max_pages * 4; k++) {
@@ -281,7 +366,12 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 								queue = nq;
 								q_cap = ncap;
 							}
-							queue[q_tail].url = strdup(link_parsed.normalized_url);
+							char *queued = strdup(link_parsed.normalized_url);
+							if (!queued) {
+								fprintf(stderr, "Warning: Out of memory queueing URL\n");
+								break;
+							}
+							queue[q_tail].url = queued;
 							queue[q_tail].depth = cur_d + 1;
 							q_tail++;
 						}
@@ -304,6 +394,7 @@ cmd_crawl(int argc, char **argv, const char *repo_dir, const char *branch)
 	}
 	free(visited);
 
+	robots_rules_free(&robots);
 	printf("Crawl completed: %lu pages archived into %s\n", (unsigned long)visited_count, branch ? branch : "archive");
 	return 0;
 }

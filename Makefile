@@ -1,10 +1,10 @@
 include config.mk
 
-SRC = strbuf.c process_utils.c entity.c sharder.c sanitizer.c parser.c git_plumbing.c approx_search.c fetcher.c gitcrawl.c
+SRC = strbuf.c process_utils.c entity.c sharder.c sanitizer.c parser.c git_plumbing.c approx_search.c fetcher.c robots.c gitcrawl.c
 OBJ = $(SRC:.c=.o)
 
-TEST_SRC = tests/test_sharder.c tests/test_sanitizer.c tests/test_parser.c tests/test_git_plumbing.c tests/test_properties.c tests/test_fuzz.c
-TEST_BIN = tests/test_sharder tests/test_sanitizer tests/test_parser tests/test_git_plumbing tests/test_properties tests/test_fuzz
+TEST_SRC = tests/test_sharder.c tests/test_sanitizer.c tests/test_parser.c tests/test_git_plumbing.c tests/test_properties.c tests/test_fuzz.c tests/test_robots.c
+TEST_BIN = tests/test_sharder tests/test_sanitizer tests/test_parser tests/test_git_plumbing tests/test_properties tests/test_fuzz tests/test_robots
 BENCH_BIN = tests/benchmark
 
 all: gitcrawl
@@ -56,6 +56,9 @@ tests/test_properties: tests/test_properties.c sharder.o sanitizer.o parser.o en
 tests/test_fuzz: tests/test_fuzz.c sharder.o sanitizer.o parser.o entity.o strbuf.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+tests/test_robots: tests/test_robots.c robots.o process_utils.o strbuf.o
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
 tests/benchmark: tests/benchmark.c sanitizer.o parser.o entity.o approx_search.o git_plumbing.o process_utils.o strbuf.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
@@ -69,6 +72,7 @@ sanitize: clean
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_git_plumbing.c git_plumbing.c process_utils.c strbuf.c -o tests/test_git_plumbing $(LDFLAGS) -fsanitize=address,undefined
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_properties.c sharder.c sanitizer.c parser.c entity.c approx_search.c git_plumbing.c process_utils.c strbuf.c -o tests/test_properties $(LDFLAGS) -fsanitize=address,undefined
 	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_fuzz.c sharder.c sanitizer.c parser.c entity.c strbuf.c -o tests/test_fuzz $(LDFLAGS) -fsanitize=address,undefined
+	@$(CC) $(CFLAGS) -g -fsanitize=address,undefined tests/test_robots.c robots.c process_utils.c strbuf.c -o tests/test_robots $(LDFLAGS) -fsanitize=address,undefined
 	@for t in $(TEST_BIN); do ./$$t || exit 1; done
 	@sh tests/run_tests.sh
 	@sh tests/test_posix.sh
@@ -82,6 +86,7 @@ valgrind: gitcrawl $(TEST_BIN)
 	@valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1 ./tests/test_parser >/dev/null
 	@valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1 ./tests/test_properties >/dev/null
 	@valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1 ./tests/test_fuzz >/dev/null
+	@valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1 ./tests/test_robots >/dev/null
 	@echo "valgrind: 0 memory leaks, 0 errors"
 
 clean:

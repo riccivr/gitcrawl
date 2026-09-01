@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -26,6 +28,17 @@ run_cmd_argv(const char *const *argv,
              struct strbuf *stdout_buf,
              struct strbuf *stderr_buf,
              const char *const *envp)
+{
+	return run_cmd_argv_timeout(argv, stdin_data, stdin_len, stdout_buf, stderr_buf, envp, 0);
+}
+
+int
+run_cmd_argv_timeout(const char *const *argv,
+                     const void *stdin_data, size_t stdin_len,
+                     struct strbuf *stdout_buf,
+                     struct strbuf *stderr_buf,
+                     const char *const *envp,
+                     int timeout_ms)
 {
 	if (!argv || !argv[0])
 		return -1;
@@ -89,13 +102,14 @@ run_cmd_argv(const char *const *argv,
 			for (const char *const *e = envp; *e; e++) {
 				const char *eq = strchr(*e, '=');
 				if (eq) {
-					char k[256];
-					size_t klen = eq - *e;
-					if (klen < sizeof(k)) {
-						memcpy(k, *e, klen);
-						k[klen] = '\0';
-						setenv(k, eq + 1, 1);
-					}
+					size_t klen = (size_t)(eq - *e);
+					char *k = malloc(klen + 1);
+					if (!k)
+						continue;
+					memcpy(k, *e, klen);
+					k[klen] = '\0';
+					setenv(k, eq + 1, 1);
+					free(k);
 				}
 			}
 		}
@@ -119,9 +133,32 @@ run_cmd_argv(const char *const *argv,
 
 	const char *stdin_ptr = (const char *)stdin_data;
 	size_t stdin_rem = stdin_len;
+	struct timespec start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
 
 	/* Multiplexed I/O event loop using poll() to prevent pipe-full deadlocks */
 	while (in_fd >= 0 || out_fd >= 0 || err_fd >= 0) {
+		int poll_wait = -1;
+		if (timeout_ms > 0) {
+			struct timespec now;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L +
+			                  (now.tv_nsec - start.tv_nsec) / 1000000L;
+			if (elapsed_ms >= timeout_ms) {
+				kill(pid, SIGTERM);
+				usleep(100000);
+				kill(pid, SIGKILL);
+				if (in_fd >= 0) { close(in_fd); in_fd = -1; }
+				if (out_fd >= 0) { close(out_fd); out_fd = -1; }
+				if (err_fd >= 0) { close(err_fd); err_fd = -1; }
+				waitpid(pid, NULL, 0);
+				return 124;
+			}
+			poll_wait = (int)(timeout_ms - elapsed_ms);
+			if (poll_wait < 1)
+				poll_wait = 1;
+		}
+
 		struct pollfd fds[3];
 		nfds_t nfds = 0;
 		int in_idx = -1, out_idx = -1, err_idx = -1;
@@ -150,7 +187,7 @@ run_cmd_argv(const char *const *argv,
 
 		if (nfds == 0) break;
 
-		int ret = poll(fds, nfds, -1);
+		int ret = poll(fds, nfds, poll_wait);
 		if (ret < 0) {
 			if (errno == EINTR) continue;
 			break;
@@ -235,6 +272,17 @@ run_cmd_argv(const char *const *argv,
              struct strbuf *stderr_buf,
              const char *const *envp)
 {
+	return run_cmd_argv_timeout(argv, stdin_data, stdin_len, stdout_buf, stderr_buf, envp, 0);
+}
+
+int
+run_cmd_argv_timeout(const char *const *argv,
+                     const void *stdin_data, size_t stdin_len,
+                     struct strbuf *stdout_buf,
+                     struct strbuf *stderr_buf,
+                     const char *const *envp,
+                     int timeout_ms)
+{
 	(void)envp;
 	if (!argv || !argv[0])
 		return -1;
@@ -304,31 +352,93 @@ run_cmd_argv(const char *const *argv,
 		return -1;
 	}
 
-	if (hStdinWrite) {
-		DWORD written;
-		WriteFile(hStdinWrite, stdin_data, (DWORD)stdin_len, &written, NULL);
-		CloseHandle(hStdinWrite);
-	}
+	const char *stdin_ptr = (const char *)stdin_data;
+	size_t stdin_rem = (hStdinWrite && stdin_data) ? stdin_len : 0;
+	DWORD start_tick = GetTickCount();
 
-	if (hStdoutRead) {
-		char buf[4096];
-		DWORD bytesRead;
-		while (ReadFile(hStdoutRead, buf, sizeof(buf), &bytesRead, NULL) && bytesRead > 0) {
-			strbuf_append_len(stdout_buf, buf, bytesRead);
+	for (;;) {
+		if (timeout_ms > 0) {
+			DWORD elapsed = GetTickCount() - start_tick;
+			if (elapsed >= (DWORD)timeout_ms) {
+				TerminateProcess(pi.hProcess, 124);
+				if (hStdinWrite) { CloseHandle(hStdinWrite); hStdinWrite = NULL; }
+				if (hStdoutRead) { CloseHandle(hStdoutRead); hStdoutRead = NULL; }
+				if (hStderrRead) { CloseHandle(hStderrRead); hStderrRead = NULL; }
+				WaitForSingleObject(pi.hProcess, 1000);
+				CloseHandle(pi.hProcess);
+				CloseHandle(pi.hThread);
+				return 124;
+			}
 		}
-		CloseHandle(hStdoutRead);
-	}
 
-	if (hStderrRead) {
-		char buf[4096];
-		DWORD bytesRead;
-		while (ReadFile(hStderrRead, buf, sizeof(buf), &bytesRead, NULL) && bytesRead > 0) {
-			strbuf_append_len(stderr_buf, buf, bytesRead);
+		if (hStdinWrite && stdin_rem > 0) {
+			DWORD chunk = stdin_rem > 4096 ? 4096 : (DWORD)stdin_rem;
+			DWORD written = 0;
+			if (WriteFile(hStdinWrite, stdin_ptr, chunk, &written, NULL) && written > 0) {
+				stdin_ptr += written;
+				stdin_rem -= written;
+			} else {
+				stdin_rem = 0;
+			}
+			if (stdin_rem == 0) {
+				CloseHandle(hStdinWrite);
+				hStdinWrite = NULL;
+			}
 		}
-		CloseHandle(hStderrRead);
+
+		int made_progress = 0;
+		if (hStdoutRead) {
+			DWORD avail = 0;
+			if (PeekNamedPipe(hStdoutRead, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+				char buf[4096];
+				DWORD bytesRead = 0;
+				DWORD to_read = avail > sizeof(buf) ? sizeof(buf) : avail;
+				if (ReadFile(hStdoutRead, buf, to_read, &bytesRead, NULL) && bytesRead > 0) {
+					strbuf_append_len(stdout_buf, buf, bytesRead);
+					made_progress = 1;
+				}
+			} else if (!PeekNamedPipe(hStdoutRead, NULL, 0, NULL, &avail, NULL)) {
+				CloseHandle(hStdoutRead);
+				hStdoutRead = NULL;
+			}
+		}
+		if (hStderrRead) {
+			DWORD avail = 0;
+			if (PeekNamedPipe(hStderrRead, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+				char buf[4096];
+				DWORD bytesRead = 0;
+				DWORD to_read = avail > sizeof(buf) ? sizeof(buf) : avail;
+				if (ReadFile(hStderrRead, buf, to_read, &bytesRead, NULL) && bytesRead > 0) {
+					strbuf_append_len(stderr_buf, buf, bytesRead);
+					made_progress = 1;
+				}
+			} else if (!PeekNamedPipe(hStderrRead, NULL, 0, NULL, &avail, NULL)) {
+				CloseHandle(hStderrRead);
+				hStderrRead = NULL;
+			}
+		}
+
+		DWORD wait = WaitForSingleObject(pi.hProcess, made_progress || stdin_rem > 0 ? 0 : 20);
+		if (wait == WAIT_OBJECT_0) {
+			char buf[4096];
+			DWORD bytesRead;
+			if (hStdoutRead) {
+				while (ReadFile(hStdoutRead, buf, sizeof(buf), &bytesRead, NULL) && bytesRead > 0)
+					strbuf_append_len(stdout_buf, buf, bytesRead);
+				CloseHandle(hStdoutRead);
+				hStdoutRead = NULL;
+			}
+			if (hStderrRead) {
+				while (ReadFile(hStderrRead, buf, sizeof(buf), &bytesRead, NULL) && bytesRead > 0)
+					strbuf_append_len(stderr_buf, buf, bytesRead);
+				CloseHandle(hStderrRead);
+				hStderrRead = NULL;
+			}
+			break;
+		}
 	}
 
-	WaitForSingleObject(pi.hProcess, INFINITE);
+	if (hStdinWrite) CloseHandle(hStdinWrite);
 	DWORD exitCode = 0;
 	GetExitCodeProcess(pi.hProcess, &exitCode);
 	CloseHandle(pi.hProcess);

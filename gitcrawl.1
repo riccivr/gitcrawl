@@ -23,6 +23,7 @@ If stdin is piped, archives standard input.
 .TP
 .B crawl \fIurl\fR
 Recursively crawls a website up to a specified depth and page limit, archiving pages into Git.
+Honors robots.txt for the start host, revalidates with stored ETags, and snapshots same-host images and stylesheets.
 .TP
 .B diff \fIurl\fR [\fIcommit1\fR] [\fIcommit2\fR]
 Shows the clean markdown diff of a URL between two revisions or against the previous commit.
@@ -57,6 +58,9 @@ Maximum crawl recursion depth (default: \fI1\fR).
 .TP
 .BI \-p " max_pages"
 Maximum number of pages to crawl (default: \fI50\fR).
+.TP
+.BI \-w " delay_ms"
+Delay in milliseconds between crawl requests after the first page (default: \fI0\fR).
 .TP
 .B \-s
 Restrict crawler to the same domain (default: off).

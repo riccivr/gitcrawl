@@ -28,6 +28,20 @@ int main(void) {
 	assert(ipv6_url.port == 8080);
 	assert(strcmp(ipv6_url.path, "/metrics") == 0);
 
+	/* Unbracketed IPv6 is wrapped so the authority stays one host. */
+	struct parsed_url ipv6_bare;
+	res = parse_and_normalize_url("https://2001:db8::1/health", &ipv6_bare);
+	assert(res == 0);
+	assert(strcmp(ipv6_bare.host, "[2001:db8::1]") == 0);
+	assert(strcmp(ipv6_bare.path, "/health") == 0);
+
+	/* userinfo is stripped from the authority */
+	struct parsed_url auth_url;
+	res = parse_and_normalize_url("https://user:pass@example.com/secret", &auth_url);
+	assert(res == 0);
+	assert(strcmp(auth_url.host, "example.com") == 0);
+	assert(strstr(auth_url.normalized_url, "user:") == NULL);
+
 	struct shard_paths ipv6_paths;
 	res = generate_shard_paths(&ipv6_url, &ipv6_paths);
 	assert(res == 0);

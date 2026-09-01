@@ -25,6 +25,9 @@ Features
 * **Two-Tier Storage**: Produces human-friendly Markdown for version tracking while retaining full original HTML payloads in compressed format.
 * **Fuzzy History Search**: Integrates the official embedded single-header [`approx.h`](https://github.com/riccivr/approx) library (v1.2.0) with Damerau-Levenshtein distance and a bounded Min-Heap for fast top-N search across archived paths.
 * **Minimal Dependencies**: Written in POSIX C99 requiring only `libc`, `zlib`, with `git` and `curl` available on `$PATH`.
+* **Conditional GET**: Sends `If-None-Match` from stored `metadata.json` and skips a new commit on HTTP 304.
+* **robots.txt**: `crawl` loads `/robots.txt` for the start host (`User-agent: *` and `gitcrawl`) and honors `Disallow` plus `Crawl-delay`.
+* **Same-host assets**: Captures `<img src>` and `<link href>` files next to the page under `assets/`.
 
 Architecture
 ------------
@@ -148,6 +151,7 @@ gitcrawl [-vh] <command> [options] [arguments]
 | `-m message` | Custom commit message |
 | `-l depth` | Recursion depth for crawling (default: `1`) |
 | `-p max_pages`| Maximum number of pages to crawl (default: `50`) |
+| `-w delay_ms` | Delay in milliseconds between crawl requests (default: `0`) |
 | `-s` | Restrict crawler to the same domain (default: off) |
 | `-f format` | Output format for `show` (`md`, `html`, `json`) |
 | `-i` | Read content from standard input for the specified URL |

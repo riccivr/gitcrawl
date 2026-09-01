@@ -8,7 +8,7 @@ url="https://github.com/riccivr/gitcrawl"
 license=('MIT')
 depends=('git' 'curl' 'zlib')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/riccivr/gitcrawl/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('06abc73d76120d42dfaf8022b1314f1b5eb9710eefab89a41d3bff78cca9b6d4')
 
 build() {
     cd "$pkgname-$pkgver"
